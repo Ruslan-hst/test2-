@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import asyncio
 import logging
 import threading
 import gspread
@@ -42,10 +43,19 @@ def index():
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-threading.Thread(target=run_flask, daemon=True).start()
+async def run_bot():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.run_polling()
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(run_bot())
+
+if __name__ == "__main__":
+    main()
