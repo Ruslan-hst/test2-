@@ -2,10 +2,12 @@ import os
 import json
 import base64
 import logging
+import threading
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from flask import Flask
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,4 +34,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"• {r['Модель']} | {r['Загиб']} | {r['Хват']} | Флекс {r['Флекс']} | {r['Количество']} шт | {r['Цена']}₽\n"
     await update.message.reply_text(text)
 
-app = ApplicationBuilder().token(BOT_TOKEN).bu
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def index():
+    return "OK"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.run_polling()
