@@ -20,7 +20,8 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
-    api_key=ANTHROPIC_API_KEY
+    api_key=ANTHROPIC_API_KEY,
+    http_client=None
 )
 
 def get_stock():
@@ -107,7 +108,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await update.message.chat.send_action("typing")
-        
+
         response = ai_client.chat.completions.create(
             model="anthropic/claude-3-haiku",
             messages=[
