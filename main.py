@@ -6,6 +6,7 @@ import logging
 import threading
 import gspread
 from google.oauth2.service_account import Credentials
+from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
@@ -15,6 +16,12 @@ logging.basicConfig(level=logging.INFO)
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 CREDS_B64 = os.environ["GOOGLE_CREDS_JSON_B64"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+ai_client = OpenAI(
+    base_url="https://polza.ai/api/v1",
+    api_key=ANTHROPIC_API_KEY
+)
 
 def get_stock():
     creds_dict = json.loads(base64.b64decode(CREDS_B64).decode("utf-8"))
@@ -27,6 +34,43 @@ def get_stock():
     sheet = client.open_by_key(SHEET_ID).worksheet("Склад")
     return sheet.get_all_records()
 
+def build_system_prompt():
+    rows = get_stock()
+    stock_text = "АКТУАЛЬНЫЕ ОСТАТКИ НА СКЛАДЕ:\n"
+    for r in rows:
+        if int(r.get("Количество", 0)) > 0:
+            stock_text += f"• {r['Модель']} | Загиб: {r['Загиб']} | Хват: {r['Хват']} | Флекс: {r['Флекс']} | Кол-во: {r['Количество']} шт | Цена: {r['Цена']}₽\n"
+
+    return f"""Ты — AI продавец магазина «Хоккейные клюшки ТОП».
+
+ТВОЯ ЗАДАЧА: помочь клиенту выбрать хоккейную клюшку и оформить заказ.
+
+ЦЕНА: 9 900₽ за клюшку. С картой UDS первая клюшка 8 900₽.
+
+{stock_text}
+
+ПРОГРАММА ЛОЯЛЬНОСТИ UDS:
+- 1 000 приветственных баллов при регистрации
+- Кэшбэк до 7% с каждой покупки
+- 1 балл = 1 рубль, списывать можно до 15% от покупки
+- Оформить: t.me/UDS_hockey_sticks_top_bot
+
+КАК ПОДОБРАТЬ КЛЮШКУ:
+- Флекс = примерно 50% от веса игрока
+- P28 — самый популярный загиб, подходит большинству
+- Для новичков: флекс 65-70, загиб P28
+- Для детей: флекс 40-55
+- Левый хват — 79% продаж
+
+ПРАВИЛА:
+1. Отвечай коротко и по делу
+2. Если клиент готов купить — попроси имя и телефон
+3. Если клиент пишет «менеджер» — скажи что передаёшь
+4. Не называй закупочные цены и имена поставщиков
+5. Отвечай только на темы хоккея и клюшек"""
+
+dialogs = {}
+
 UDS_BUTTONS = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("📱 ТГ", url="https://t.me/UDS_hockey_sticks_top_bot"),
@@ -38,81 +82,53 @@ MANAGER_BUTTONS = InlineKeyboardMarkup([
     [InlineKeyboardButton("💬 Написать менеджеру", url="https://t.me/hockey_top_bot")]
 ])
 
-PRICE_TEXT = """💰 Цена клюшки — 9 900₽
-
-🪪 Оформим карту UDS — дарим 1 000 приветственных бонусов.
-Итого первая клюшка выходит всего 8 900₽ 🔥
-Плюс кэшбэк с каждого заказа на следующие покупки.
-
-♻️ Оформить карту — займёт менее 1 мин ⚡️"""
-
-UDS_TEXT = """🎁 У нас программа лояльности UDS — бонусы и скидки с каждой покупки!
-
-Что вы получаете:
-⭐️ 1 000 приветственных баллов при регистрации
-💸 Кэшбэк до 7% с каждой покупки
-👥 500 баллов за приглашённого друга
-🏒 1 балл = 1 рубль, списывать можно до 15% от покупки
-
-Зарегистрируйтесь — баллы начислятся автоматически 👇
-Баллы можно использовать уже на первый заказ! 🎯"""
-
-MANAGER_TEXT = """📞 Передаю тебя менеджеру!
-
-Напиши — ответим быстро 👇"""
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот магазина «Хоккейные клюшки ТОП».\n\n"
-        "Напиши:\n"
-        "• «наличие» — показать все клюшки на складе\n"
-        "• «P28» — клюшки с загибом P28\n"
-        "• «цена» — узнать цену\n"
-        "• «скидка» — программа лояльности UDS\n"
-        "• «менеджер» — связаться с менеджером"
+        "👋 Привет! Я AI помощник магазина «Хоккейные клюшки ТОП».\n\n"
+        "Задай любой вопрос — помогу подобрать клюшку! 🏒"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
+    user_id = update.message.from_user.id
+    text = update.message.text
 
-    if any(w in text for w in ["наличие", "есть", "склад", "что есть"]):
-        rows = get_stock()
-        reply = "📦 Наличие на складе:\n\n"
-        for r in rows:
-            if int(r.get("Количество", 0)) > 0:
-                reply += f"• {r['Модель']} | {r['Загиб']} | {r['Хват']} | Флекс {r['Флекс']} | {r['Количество']} шт | {r['Цена']}₽\n"
-        await update.message.reply_text(reply)
-
-    elif "p28" in text:
-        rows = get_stock()
-        reply = "📦 Клюшки с загибом P28:\n\n"
-        found = False
-        for r in rows:
-            if r.get("Загиб") == "P28" and int(r.get("Количество", 0)) > 0:
-                reply += f"• {r['Модель']} | {r['Хват']} | Флекс {r['Флекс']} | {r['Количество']} шт | {r['Цена']}₽\n"
-                found = True
-        if not found:
-            reply = "К сожалению P28 сейчас нет в наличии 😔"
-        await update.message.reply_text(reply)
-
-    elif any(w in text for w in ["цена", "стоимость", "сколько стоит", "почём", "сколько"]):
-        await update.message.reply_text(PRICE_TEXT, reply_markup=UDS_BUTTONS)
-
-    elif any(w in text for w in ["скидка", "бонус", "кэшбэк", "uds", "удс", "карта"]):
-        await update.message.reply_text(UDS_TEXT, reply_markup=UDS_BUTTONS)
-
-    elif any(w in text for w in ["менеджер", "позвони", "перезвони", "человек", "оператор"]):
-        await update.message.reply_text(MANAGER_TEXT, reply_markup=MANAGER_BUTTONS)
-
-    else:
+    manager_keywords = ["менеджер", "позвони", "перезвони", "оператор", "человек"]
+    if any(w in text.lower() for w in manager_keywords):
         await update.message.reply_text(
-            "Не понял вопрос 😅\n\n"
-            "Напиши:\n"
-            "• «наличие» — показать склад\n"
-            "• «P28» — клюшки P28\n"
-            "• «цена» — узнать цену\n"
-            "• «скидка» — программа лояльности\n"
-            "• «менеджер» — связаться с менеджером"
+            "Передаю тебя менеджеру — ответим быстро! 👇",
+            reply_markup=MANAGER_BUTTONS
+        )
+        return
+
+    if user_id not in dialogs:
+        dialogs[user_id] = []
+
+    dialogs[user_id].append({"role": "user", "content": text})
+
+    try:
+        await update.message.chat.send_action("typing")
+        
+        response = ai_client.chat.completions.create(
+            model="anthropic/claude-3-haiku",
+            messages=[
+                {"role": "system", "content": build_system_prompt()}
+            ] + dialogs[user_id][-10:]
+        )
+
+        answer = response.choices[0].message.content
+        dialogs[user_id].append({"role": "assistant", "content": answer})
+
+        uds_keywords = ["uds", "удс", "карта", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
+        if any(w in answer.lower() for w in uds_keywords):
+            await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
+        else:
+            await update.message.reply_text(answer)
+
+    except Exception as e:
+        logging.error(f"AI ошибка: {e}")
+        await update.message.reply_text(
+            "Что-то пошло не так 😔 Напиши «менеджер» — помогут вручную.",
+            reply_markup=MANAGER_BUTTONS
         )
 
 flask_app = Flask(__name__)
