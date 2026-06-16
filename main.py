@@ -19,3 +19,14 @@ rows = sheet.get_all_records()
 print(f"Загружено строк: {len(rows)}")
 for r in rows:
     print(r)
+
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    return "OK"
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
