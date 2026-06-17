@@ -62,6 +62,11 @@ def build_system_prompt():
 - Для детей: флекс 40-55
 - Левый хват — 79% продаж
 
+ЕСЛИ КЛИЕНТ ПРИСЫЛАЕТ ФОТО КЛЮШКИ:
+- Постарайся определить модель, загиб, цвет по фото
+- Сравни с нашим складом и скажи есть ли похожая модель
+- Если не уверен — честно скажи что не можешь точно определить модель, предложи уточнить характеристики словами
+
 ПРАВИЛА:
 1. Отвечай коротко и по делу
 2. Если клиент готов купить — попроси имя и телефон
@@ -85,8 +90,25 @@ MANAGER_BUTTONS = InlineKeyboardMarkup([
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я AI помощник магазина «Хоккейные клюшки ТОП».\n\n"
-        "Задай любой вопрос — помогу подобрать клюшку! 🏒"
+        "Задай любой вопрос или пришли фото клюшки — помогу подобрать! 🏒📸"
     )
+
+async def ask_ai(user_id, content):
+    if user_id not in dialogs:
+        dialogs[user_id] = []
+
+    dialogs[user_id].append({"role": "user", "content": content})
+
+    response = ai_client.chat.completions.create(
+        model="anthropic/claude-3-haiku",
+        messages=[
+            {"role": "system", "content": build_system_prompt()}
+        ] + dialogs[user_id][-10:]
+    )
+
+    answer = response.choices[0].message.content
+    dialogs[user_id].append({"role": "assistant", "content": answer})
+    return answer
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -100,23 +122,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if user_id not in dialogs:
-        dialogs[user_id] = []
-
-    dialogs[user_id].append({"role": "user", "content": text})
-
     try:
         await update.message.chat.send_action("typing")
-
-        response = ai_client.chat.completions.create(
-            model="anthropic/claude-3-haiku",
-            messages=[
-                {"role": "system", "content": build_system_prompt()}
-            ] + dialogs[user_id][-10:]
-        )
-
-        answer = response.choices[0].message.content
-        dialogs[user_id].append({"role": "assistant", "content": answer})
+        answer = await ask_ai(user_id, text)
 
         uds_keywords = ["uds", "удс", "карта", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
         if any(w in answer.lower() for w in uds_keywords):
@@ -129,6 +137,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Что-то пошло не так 😔 Напиши «менеджер» — помогут вручную.",
             reply_markup=MANAGER_BUTTONS
+        )
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+
+    try:
+        await update.message.chat.send_action("typing")
+
+        photo = update.message.photo[-1]
+        photo_file = await photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        photo_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+
+        caption = update.message.caption or "Клиент прислал фото клюшки. Посмотри и скажи что это за модель, есть ли похожая у нас на складе."
+
+        content = [
+            {"type": "text", "text": caption},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{photo_b64}"}
+            }
+        ]
+
+        answer = await ask_ai(user_id, content)
+        await update.message.reply_text(answer)
+
+    except Exception as e:
+        logging.error(f"Ошибка анализа фото: {e}")
+        await update.message.reply_text(
+            "Не получилось рассмотреть фото 😔 Опиши клюшку словами — модель, загиб, цвет.",
         )
 
 flask_app = Flask(__name__)
@@ -144,6 +182,7 @@ def run_flask():
 async def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await app.initialize()
     await app.start()
