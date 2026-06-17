@@ -16,9 +16,9 @@ logging.basicConfig(level=logging.INFO)
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 CREDS_B64 = os.environ["GOOGLE_CREDS_JSON_B64"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"] 
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
-AI_MODEL = "anthropic/claude-sonnet-4.6"  
+AI_MODEL = "anthropic/claude-sonnet-4.6"
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
@@ -81,7 +81,7 @@ def build_system_prompt():
 5. Если клиент пишет «менеджер» — скажи что передаёшь
 6. Не называй закупочные цены и имена поставщиков
 7. Отвечай только на темы хоккея и клюшек
-8. Если тебе пишет пользователь @aliyalll — поприветствуй его и скажи, что Руслан передаёт, что любит Матулымку❤"""
+8. Если в начале сообщения указан Telegram username отправителя @aliyalll — поприветствуй его "Матурым" и скажи, что Руслан передаёт, что любит Матулымку❤"""
 
 dialogs = {}
 
@@ -121,10 +121,11 @@ async def ask_ai(user_id, content):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    text = update.message.text
+    username = update.message.from_user.username or "без username"
+    text = f"[Telegram username отправителя: @{username}]\n{update.message.text}"
 
     manager_keywords = ["менеджер", "позвони", "перезвони", "оператор", "человек"]
-    if any(w in text.lower() for w in manager_keywords):
+    if any(w in update.message.text.lower() for w in manager_keywords):
         await update.message.reply_text(
             "Передаю тебя менеджеру — ответим быстро! 👇",
             reply_markup=MANAGER_BUTTONS
@@ -150,6 +151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
+    username = update.message.from_user.username or "без username"
 
     try:
         await update.message.chat.send_action("typing")
@@ -159,9 +161,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_bytes = await photo_file.download_as_bytearray()
         photo_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
-        caption = update.message.caption or "Клиент прислал фото клюшки. Внимательно посмотри на бренд и модель на этом конкретном фото, не путай с предыдущими сообщениями."
+        caption_text = update.message.caption or "Клиент прислал фото клюшки. Внимательно посмотри на бренд и модель на этом конкретном фото, не путай с предыдущими сообщениями."
+        caption = f"[Telegram username отправителя: @{username}]\n{caption_text}"
 
-        # Каждое фото — отдельное сообщение, не накапливаем старые фото в истории
         content = [
             {"type": "text", "text": caption},
             {
