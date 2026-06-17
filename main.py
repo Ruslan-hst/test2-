@@ -20,8 +20,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
-    api_key=ANTHROPIC_API_KEY,
-    http_client=None
+    api_key=ANTHROPIC_API_KEY
 )
 
 def get_stock():
