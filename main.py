@@ -16,7 +16,9 @@ logging.basicConfig(level=logging.INFO)
 SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 CREDS_B64 = os.environ["GOOGLE_CREDS_JSON_B64"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"] 
+
+AI_MODEL = "anthropic/claude-sonnet-4.6"  
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
@@ -43,6 +45,8 @@ def build_system_prompt():
 
     return f"""Ты — AI продавец магазина «Хоккейные клюшки ТОП».
 
+ВАЖНО: Всегда отвечай только на русском языке, независимо от того на каком языке было предыдущее сообщение.
+
 ТВОЯ ЗАДАЧА: помочь клиенту выбрать хоккейную клюшку и оформить заказ.
 
 ЦЕНА: 9 900₽ за клюшку. С картой UDS первая клюшка 8 900₽.
@@ -63,8 +67,10 @@ def build_system_prompt():
 - Левый хват — 79% продаж
 
 ЕСЛИ КЛИЕНТ ПРИСЫЛАЕТ ФОТО КЛЮШКИ:
-- Постарайся определить модель, загиб, цвет по фото
-- Сравни с нашим складом и скажи есть ли похожая модель
+- Внимательно посмотри на надписи и логотип бренда на самой клюшке (CCM, Bauer, Warrior и т.д.)
+- Не угадывай модель по предыдущему разговору — анализируй именно то что видно на текущем фото
+- Если на фото видна другая модель, отличная от того что обсуждали ранее — скажи об этом прямо
+- Сравни увиденное с нашим складом и скажи есть ли похожая модель
 - Если не уверен — честно скажи что не можешь точно определить модель, предложи уточнить характеристики словами
 
 ПРАВИЛА:
@@ -100,7 +106,7 @@ async def ask_ai(user_id, content):
     dialogs[user_id].append({"role": "user", "content": content})
 
     response = ai_client.chat.completions.create(
-        model="anthropic/claude-3-haiku",
+        model=AI_MODEL,
         messages=[
             {"role": "system", "content": build_system_prompt()}
         ] + dialogs[user_id][-10:]
@@ -150,8 +156,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_bytes = await photo_file.download_as_bytearray()
         photo_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
-        caption = update.message.caption or "Клиент прислал фото клюшки. Посмотри и скажи что это за модель, есть ли похожая у нас на складе."
+        caption = update.message.caption or "Клиент прислал фото клюшки. Внимательно посмотри на бренд и модель на этом конкретном фото, не путай с предыдущими сообщениями."
 
+        # Каждое фото — отдельное сообщение, не накапливаем старые фото в истории
         content = [
             {"type": "text", "text": caption},
             {
@@ -160,7 +167,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         ]
 
-        answer = await ask_ai(user_id, content)
+        response = ai_client.chat.completions.create(
+            model=AI_MODEL,
+            messages=[
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": content}
+            ]
+        )
+
+        answer = response.choices[0].message.content
+
+        if user_id not in dialogs:
+            dialogs[user_id] = []
+        dialogs[user_id].append({"role": "user", "content": "[фото клюшки]"})
+        dialogs[user_id].append({"role": "assistant", "content": answer})
+
         await update.message.reply_text(answer)
 
     except Exception as e:
