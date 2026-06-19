@@ -221,9 +221,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # Уведомление в личку про запрос менеджера
         try:
+            group_id_for_link = str(ADMIN_GROUP_ID).replace("-100", "")
+            topic_link = f"https://t.me/c/{group_id_for_link}/{thread_id}"
             await context.bot.send_message(
                 chat_id=ADMIN_PERSONAL_ID,
-                text=f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}"
+                text=f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}\n\n👉 Перейти в чат: {topic_link}"
             )
         except Exception as e:
             logging.error(f"Ошибка уведомления про менеджера: {e}")
