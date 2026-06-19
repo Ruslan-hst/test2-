@@ -22,6 +22,8 @@ ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
 ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
 AI_MODEL = "anthropic/claude-sonnet-4.6"
+PAUSE_MINUTES = 10  # Длительность паузы AI после сообщения менеджера
+CHECK_INTERVAL_SECONDS = 120  # Как часто проверять (2 минуты)
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
@@ -47,7 +49,6 @@ def get_chats_sheet():
     return client.open_by_key(SHEET_ID).worksheet("Чаты_ТГ")
 
 def load_topic_mapping():
-    """Загружает все связи user_id <-> thread_id из Google Sheets."""
     try:
         sheet = get_chats_sheet()
         rows = sheet.get_all_records()
@@ -64,7 +65,6 @@ def load_topic_mapping():
         return {}, {}
 
 def save_topic_mapping(user_id, thread_id, user_name, username, phone=""):
-    """Сохраняет новую связь user_id <-> thread_id в Google Sheets."""
     try:
         sheet = get_chats_sheet()
         sheet.append_row([str(user_id), str(thread_id), user_name, username, phone])
@@ -95,11 +95,10 @@ def build_system_prompt():
 - Оформить: t.me/UDS_hockey_sticks_top_bot
 
 КАК ПОДОБРАТЬ КЛЮШКУ:
-- Флекс = примерно 50% от веса игрока умноженное на 2,2
-- P92 — стандартный загиб, что
-- P28 — самый популярный загиб, считается более агрессивным.
-- Для новичков: флекс от 70, загиб 92
-- Для детей и подростков: флекс 20-65
+- Флекс = примерно 50% от веса игрока
+- P28 — самый популярный загиб, подходит большинству
+- Для новичков: флекс 65-70, загиб P28
+- Для детей: флекс 40-55
 - Левый хват — 79% продаж
 
 ЕСЛИ КЛИЕНТ ПРИСЫЛАЕТ ФОТО КЛЮШКИ:
@@ -120,9 +119,11 @@ def build_system_prompt():
 8. Если в начале сообщения указан Telegram username отправителя @aliyalll — поприветствуй его и скажи, что Руслан передаёт, что любит Матулымку"""
 
 dialogs = {}
-
-# Загружаем существующие связи из Sheets при старте бота
 client_topics, topic_to_client = load_topic_mapping()
+
+# Состояние "паузы AI" по каждому клиенту
+# { user_id: {"paused": True/False, "last_manager_message_time": timestamp, "pending_client_messages": []} }
+pause_state = {}
 
 UDS_BUTTONS = InlineKeyboardMarkup([
     [
@@ -131,12 +132,11 @@ UDS_BUTTONS = InlineKeyboardMarkup([
     ]
 ])
 
-MANAGER_BUTTONS = InlineKeyboardMarkup([
-    [InlineKeyboardButton("💬 Написать менеджеру", url="https://t.me/hockey_top_bot")]
-])
+def get_topic_link(thread_id):
+    group_id_for_link = str(ADMIN_GROUP_ID).replace("-100", "")
+    return f"https://t.me/c/{group_id_for_link}/{thread_id}"
 
 async def get_or_create_topic(context, user_id, user_name, username):
-    """Возвращает thread_id темы для этого клиента, создаёт новую если не существует."""
     if user_id in client_topics:
         return client_topics[user_id]
 
@@ -152,10 +152,8 @@ async def get_or_create_topic(context, user_id, user_name, username):
     client_topics[user_id] = thread_id
     topic_to_client[thread_id] = user_id
 
-    # Сохраняем в Google Sheets
     save_topic_mapping(user_id, thread_id, user_name, username)
 
-    # Уведомление в личку о новом чате
     try:
         await context.bot.send_message(
             chat_id=ADMIN_PERSONAL_ID,
@@ -189,8 +187,11 @@ async def ask_ai(user_id, content):
     dialogs[user_id].append({"role": "assistant", "content": answer})
     return answer
 
+def is_ai_paused(user_id):
+    state = pause_state.get(user_id)
+    return state is not None and state.get("paused", False)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Сообщения из админской группы обрабатываются отдельно
     if update.message.chat_id == ADMIN_GROUP_ID:
         await handle_admin_reply(update, context)
         return
@@ -215,20 +216,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     manager_keywords = ["менеджер", "позвони", "перезвони", "оператор", "человек"]
     if any(w in raw_text.lower() for w in manager_keywords):
-        await update.message.reply_text(
-            "Передаю тебя менеджеру — ответим быстро! 👇",
-            reply_markup=MANAGER_BUTTONS
-        )
-        # Уведомление в личку про запрос менеджера
+        await update.message.reply_text("Передаю тебя менеджеру — ответим быстро! 👇")
+
+        # Включаем режим паузы AI для этого клиента
+        pause_state[user_id] = {
+            "paused": True,
+            "last_manager_message_time": time.time(),
+            "pending_client_messages": []
+        }
+
         try:
-            group_id_for_link = str(ADMIN_GROUP_ID).replace("-100", "")
-            topic_link = f"https://t.me/c/{group_id_for_link}/{thread_id}"
+            thread_id = client_topics.get(user_id)
+            topic_link = get_topic_link(thread_id) if thread_id else ""
             await context.bot.send_message(
                 chat_id=ADMIN_PERSONAL_ID,
                 text=f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}\n\n👉 Перейти в чат: {topic_link}"
             )
         except Exception as e:
             logging.error(f"Ошибка уведомления про менеджера: {e}")
+        return
+
+    # Если AI на паузе — просто запоминаем сообщение клиента, ничего не отвечаем
+    if is_ai_paused(user_id):
+        pause_state[user_id]["pending_client_messages"].append(raw_text)
         return
 
     try:
@@ -241,7 +251,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(answer)
 
-        # Дублируем ответ AI в тему группы
         try:
             thread_id = client_topics.get(user_id)
             if thread_id:
@@ -255,13 +264,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(f"AI ошибка: {e}")
-        await update.message.reply_text(
-            "Что-то пошло не так 😔 Напиши «менеджер» — помогут вручную.",
-            reply_markup=MANAGER_BUTTONS
-        )
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Когда Руслан пишет в теме группы — пересылаем клиенту."""
+    """Когда Руслан пишет в теме группы — пересылаем клиенту и продлеваем паузу AI."""
     thread_id = update.message.message_thread_id
     if not thread_id or thread_id not in topic_to_client:
         return
@@ -272,6 +277,14 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         await context.bot.send_message(chat_id=user_id, text=reply_text)
         await update.message.reply_text("✅ Отправлено клиенту")
+
+        # Продлеваем/включаем паузу AI
+        if user_id not in pause_state:
+            pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
+        else:
+            pause_state[user_id]["paused"] = True
+            pause_state[user_id]["last_manager_message_time"] = time.time()
+
     except Exception as e:
         logging.error(f"Ошибка отправки ответа клиенту: {e}")
         await update.message.reply_text("❌ Не удалось отправить клиенту")
@@ -283,6 +296,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
+
+    if is_ai_paused(user_id):
+        pause_state[user_id]["pending_client_messages"].append("[Клиент отправил фото]")
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            photo = update.message.photo[-1]
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id,
+                caption="👤 Клиент отправил фото 📸"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото на паузе: {e}")
+        return
 
     try:
         await update.message.chat.send_action("typing")
@@ -320,7 +348,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(answer)
 
-        # Дублируем в тему группы
         try:
             thread_id = await get_or_create_topic(context, user_id, user_name, username)
             await context.bot.send_message(
@@ -343,9 +370,49 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(f"Ошибка анализа фото: {e}")
-        await update.message.reply_text(
-            "Не получилось рассмотреть фото 😔 Опиши клюшку словами — модель, загиб, цвет.",
-        )
+
+async def pause_checker_loop(application):
+    """Фоновая задача — каждые 2 минуты проверяет все паузы и решает, не пора ли AI возобновить разговор."""
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+        now = time.time()
+
+        for user_id, state in list(pause_state.items()):
+            if not state.get("paused"):
+                continue
+
+            elapsed = now - state["last_manager_message_time"]
+            if elapsed < PAUSE_MINUTES * 60:
+                continue  # Менеджер ещё "активен" по времени, продолжаем молчать
+
+            pending = state.get("pending_client_messages", [])
+            if not pending:
+                # Менеджер не писал 10+ минут, но и клиент молчит — просто снимаем паузу, ничего не отвечаем
+                state["paused"] = False
+                continue
+
+            # Менеджер не писал 10+ минут, и есть новые сообщения клиента — AI просыпается и отвечает
+            try:
+                combined_text = "\n".join(pending)
+                content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
+
+                answer = await ask_ai(user_id, content)
+
+                await application.bot.send_message(chat_id=user_id, text=answer)
+
+                thread_id = client_topics.get(user_id)
+                if thread_id:
+                    await application.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        message_thread_id=thread_id,
+                        text=f"🤖 AI (вернулся после паузы): {answer}"
+                    )
+
+                state["paused"] = False
+                state["pending_client_messages"] = []
+
+            except Exception as e:
+                logging.error(f"Ошибка при возобновлении AI после паузы: {e}")
 
 flask_app = Flask(__name__)
 
@@ -365,6 +432,9 @@ async def run_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+    asyncio.create_task(pause_checker_loop(app))
+
     await asyncio.Event().wait()
 
 def main():
