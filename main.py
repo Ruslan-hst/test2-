@@ -4,6 +4,7 @@ import base64
 import asyncio
 import logging
 import threading
+import time
 import gspread
 from google.oauth2.service_account import Credentials
 from openai import OpenAI
@@ -17,6 +18,8 @@ SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 CREDS_B64 = os.environ["GOOGLE_CREDS_JSON_B64"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
+ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
 AI_MODEL = "anthropic/claude-sonnet-4.6"
 
@@ -25,16 +28,48 @@ ai_client = OpenAI(
     api_key=ANTHROPIC_API_KEY
 )
 
-def get_stock():
+def get_sheets_client():
     creds_dict = json.loads(base64.b64decode(CREDS_B64).decode("utf-8"))
     scopes = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly"
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
+    return gspread.authorize(creds)
+
+def get_stock():
+    client = get_sheets_client()
     sheet = client.open_by_key(SHEET_ID).worksheet("Склад")
     return sheet.get_all_records()
+
+def get_chats_sheet():
+    client = get_sheets_client()
+    return client.open_by_key(SHEET_ID).worksheet("Чаты_ТГ")
+
+def load_topic_mapping():
+    """Загружает все связи user_id <-> thread_id из Google Sheets."""
+    try:
+        sheet = get_chats_sheet()
+        rows = sheet.get_all_records()
+        client_topics = {}
+        topic_to_client = {}
+        for r in rows:
+            uid = int(r["user_id"])
+            tid = int(r["thread_id"])
+            client_topics[uid] = tid
+            topic_to_client[tid] = uid
+        return client_topics, topic_to_client
+    except Exception as e:
+        logging.error(f"Ошибка загрузки маппинга из Sheets: {e}")
+        return {}, {}
+
+def save_topic_mapping(user_id, thread_id, user_name, username, phone=""):
+    """Сохраняет новую связь user_id <-> thread_id в Google Sheets."""
+    try:
+        sheet = get_chats_sheet()
+        sheet.append_row([str(user_id), str(thread_id), user_name, username, phone])
+    except Exception as e:
+        logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
 
 def build_system_prompt():
     rows = get_stock()
@@ -60,10 +95,11 @@ def build_system_prompt():
 - Оформить: t.me/UDS_hockey_sticks_top_bot
 
 КАК ПОДОБРАТЬ КЛЮШКУ:
-- Флекс = примерно 50% от веса игрока
-- P28 — самый популярный загиб, подходит большинству
-- Для новичков: флекс 65-70, загиб P28
-- Для детей: флекс 40-55
+- Флекс = примерно 50% от веса игрока умноженное на 2,2
+- P92 — стандартный загиб, что
+- P28 — самый популярный загиб, считается более агрессивным.
+- Для новичков: флекс от 70, загиб 92
+- Для детей и подростков: флекс 20-65
 - Левый хват — 79% продаж
 
 ЕСЛИ КЛИЕНТ ПРИСЫЛАЕТ ФОТО КЛЮШКИ:
@@ -81,9 +117,12 @@ def build_system_prompt():
 5. Если клиент пишет «менеджер» — скажи что передаёшь
 6. Не называй закупочные цены и имена поставщиков
 7. Отвечай только на темы хоккея и клюшек
-8. Если в начале сообщения указан Telegram username отправителя @aliyalll — поприветствуй его "Матурым" и скажи, что Руслан передаёт, что любит Матулымку❤"""
+8. Если в начале сообщения указан Telegram username отправителя @aliyalll — поприветствуй его и скажи, что Руслан передаёт, что любит Матулымку"""
 
 dialogs = {}
+
+# Загружаем существующие связи из Sheets при старте бота
+client_topics, topic_to_client = load_topic_mapping()
 
 UDS_BUTTONS = InlineKeyboardMarkup([
     [
@@ -95,6 +134,37 @@ UDS_BUTTONS = InlineKeyboardMarkup([
 MANAGER_BUTTONS = InlineKeyboardMarkup([
     [InlineKeyboardButton("💬 Написать менеджеру", url="https://t.me/hockey_top_bot")]
 ])
+
+async def get_or_create_topic(context, user_id, user_name, username):
+    """Возвращает thread_id темы для этого клиента, создаёт новую если не существует."""
+    if user_id in client_topics:
+        return client_topics[user_id]
+
+    topic_name = f"{user_name} (@{username})" if username != "без username" else user_name
+    topic_name = topic_name[:128]
+
+    topic = await context.bot.create_forum_topic(
+        chat_id=ADMIN_GROUP_ID,
+        name=topic_name
+    )
+
+    thread_id = topic.message_thread_id
+    client_topics[user_id] = thread_id
+    topic_to_client[thread_id] = user_id
+
+    # Сохраняем в Google Sheets
+    save_topic_mapping(user_id, thread_id, user_name, username)
+
+    # Уведомление в личку о новом чате
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_PERSONAL_ID,
+            text=f"🆕 Новый клиент в боте!\n\n👤 Имя: {user_name}\n📱 Username: @{username}\n\n💬 Тема создана в группе"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка уведомления о новом чате: {e}")
+
+    return thread_id
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -120,16 +190,43 @@ async def ask_ai(user_id, content):
     return answer
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Сообщения из админской группы обрабатываются отдельно
+    if update.message.chat_id == ADMIN_GROUP_ID:
+        await handle_admin_reply(update, context)
+        return
+
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
-    text = f"[Telegram username отправителя: @{username}]\n{update.message.text}"
+    user_name = update.message.from_user.full_name or "Клиент"
+    raw_text = update.message.text
+
+    text = f"[Telegram username отправителя: @{username}]\n{raw_text}"
+
+    # Дублируем сообщение клиента в тему группы
+    try:
+        thread_id = await get_or_create_topic(context, user_id, user_name, username)
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=thread_id,
+            text=f"👤 Клиент: {raw_text}"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка дублирования в группу: {e}")
 
     manager_keywords = ["менеджер", "позвони", "перезвони", "оператор", "человек"]
-    if any(w in update.message.text.lower() for w in manager_keywords):
+    if any(w in raw_text.lower() for w in manager_keywords):
         await update.message.reply_text(
             "Передаю тебя менеджеру — ответим быстро! 👇",
             reply_markup=MANAGER_BUTTONS
         )
+        # Уведомление в личку про запрос менеджера
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_PERSONAL_ID,
+                text=f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка уведомления про менеджера: {e}")
         return
 
     try:
@@ -142,6 +239,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(answer)
 
+        # Дублируем ответ AI в тему группы
+        try:
+            thread_id = client_topics.get(user_id)
+            if thread_id:
+                await context.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    message_thread_id=thread_id,
+                    text=f"🤖 AI: {answer}"
+                )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования ответа AI в группу: {e}")
+
     except Exception as e:
         logging.error(f"AI ошибка: {e}")
         await update.message.reply_text(
@@ -149,9 +258,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=MANAGER_BUTTONS
         )
 
+async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Когда Руслан пишет в теме группы — пересылаем клиенту."""
+    thread_id = update.message.message_thread_id
+    if not thread_id or thread_id not in topic_to_client:
+        return
+
+    user_id = topic_to_client[thread_id]
+    reply_text = update.message.text
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=reply_text)
+        await update.message.reply_text("✅ Отправлено клиенту")
+    except Exception as e:
+        logging.error(f"Ошибка отправки ответа клиенту: {e}")
+        await update.message.reply_text("❌ Не удалось отправить клиенту")
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id == ADMIN_GROUP_ID:
+        return
+
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
+    user_name = update.message.from_user.full_name or "Клиент"
 
     try:
         await update.message.chat.send_action("typing")
@@ -188,6 +317,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dialogs[user_id].append({"role": "assistant", "content": answer})
 
         await update.message.reply_text(answer)
+
+        # Дублируем в тему группы
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                text="👤 Клиент отправил фото 📸"
+            )
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id
+            )
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                text=f"🤖 AI: {answer}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото в группу: {e}")
 
     except Exception as e:
         logging.error(f"Ошибка анализа фото: {e}")
