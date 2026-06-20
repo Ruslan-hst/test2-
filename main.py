@@ -22,8 +22,8 @@ ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
 ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
 AI_MODEL = "anthropic/claude-sonnet-4.6"
-PAUSE_MINUTES = 10  # Длительность паузы AI после сообщения менеджера
-CHECK_INTERVAL_SECONDS = 120  # Как часто проверять (2 минуты)
+PAUSE_MINUTES = 10
+CHECK_INTERVAL_SECONDS = 120
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
@@ -54,15 +54,17 @@ def load_topic_mapping():
         rows = sheet.get_all_records()
         client_topics = {}
         topic_to_client = {}
+        topic_names = {}
         for r in rows:
             uid = int(r["user_id"])
             tid = int(r["thread_id"])
             client_topics[uid] = tid
             topic_to_client[tid] = uid
-        return client_topics, topic_to_client
+            topic_names[uid] = r.get("user_name", "Клиент")
+        return client_topics, topic_to_client, topic_names
     except Exception as e:
         logging.error(f"Ошибка загрузки маппинга из Sheets: {e}")
-        return {}, {}
+        return {}, {}, {}
 
 def save_topic_mapping(user_id, thread_id, user_name, username, phone=""):
     try:
@@ -119,10 +121,8 @@ def build_system_prompt():
 8. Если в начале сообщения указан Telegram username отправителя @aliyalll — поприветствуй его и скажи, что Руслан передаёт, что любит Матулымку"""
 
 dialogs = {}
-client_topics, topic_to_client = load_topic_mapping()
+client_topics, topic_to_client, topic_names = load_topic_mapping()
 
-# Состояние "паузы AI" по каждому клиенту
-# { user_id: {"paused": True/False, "last_manager_message_time": timestamp, "pending_client_messages": []} }
 pause_state = {}
 
 UDS_BUTTONS = InlineKeyboardMarkup([
@@ -135,6 +135,25 @@ UDS_BUTTONS = InlineKeyboardMarkup([
 def get_topic_link(thread_id):
     group_id_for_link = str(ADMIN_GROUP_ID).replace("-100", "")
     return f"https://t.me/c/{group_id_for_link}/{thread_id}"
+
+async def set_topic_muted(bot, user_id, muted: bool):
+    """Добавляет/убирает 🔇 в название темы, чтобы видно было что AI молчит."""
+    thread_id = client_topics.get(user_id)
+    if not thread_id:
+        return
+
+    base_name = topic_names.get(user_id, "Клиент")
+    new_name = f"🔇 {base_name}" if muted else base_name
+    new_name = new_name[:128]
+
+    try:
+        await bot.edit_forum_topic(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=thread_id,
+            name=new_name
+        )
+    except Exception as e:
+        logging.error(f"Ошибка переименования темы: {e}")
 
 async def get_or_create_topic(context, user_id, user_name, username):
     if user_id in client_topics:
@@ -151,6 +170,7 @@ async def get_or_create_topic(context, user_id, user_name, username):
     thread_id = topic.message_thread_id
     client_topics[user_id] = thread_id
     topic_to_client[thread_id] = user_id
+    topic_names[user_id] = topic_name
 
     save_topic_mapping(user_id, thread_id, user_name, username)
 
@@ -203,7 +223,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = f"[Telegram username отправителя: @{username}]\n{raw_text}"
 
-    # Дублируем сообщение клиента в тему группы
     try:
         thread_id = await get_or_create_topic(context, user_id, user_name, username)
         await context.bot.send_message(
@@ -218,12 +237,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if any(w in raw_text.lower() for w in manager_keywords):
         await update.message.reply_text("Передаю тебя менеджеру — ответим быстро! 👇")
 
-        # Включаем режим паузы AI для этого клиента
         pause_state[user_id] = {
             "paused": True,
             "last_manager_message_time": time.time(),
             "pending_client_messages": []
         }
+        await set_topic_muted(context.bot, user_id, True)
 
         try:
             thread_id = client_topics.get(user_id)
@@ -236,7 +255,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Ошибка уведомления про менеджера: {e}")
         return
 
-    # Если AI на паузе — просто запоминаем сообщение клиента, ничего не отвечаем
     if is_ai_paused(user_id):
         pause_state[user_id]["pending_client_messages"].append(raw_text)
         return
@@ -266,7 +284,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"AI ошибка: {e}")
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Когда Руслан пишет в теме группы — пересылаем клиенту и продлеваем паузу AI."""
     thread_id = update.message.message_thread_id
     if not thread_id or thread_id not in topic_to_client:
         return
@@ -278,12 +295,13 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await context.bot.send_message(chat_id=user_id, text=reply_text)
         await update.message.reply_text("✅ Отправлено клиенту")
 
-        # Продлеваем/включаем паузу AI
         if user_id not in pause_state:
             pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
         else:
             pause_state[user_id]["paused"] = True
             pause_state[user_id]["last_manager_message_time"] = time.time()
+
+        await set_topic_muted(context.bot, user_id, True)
 
     except Exception as e:
         logging.error(f"Ошибка отправки ответа клиенту: {e}")
@@ -372,7 +390,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка анализа фото: {e}")
 
 async def pause_checker_loop(application):
-    """Фоновая задача — каждые 2 минуты проверяет все паузы и решает, не пора ли AI возобновить разговор."""
     while True:
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         now = time.time()
@@ -383,15 +400,14 @@ async def pause_checker_loop(application):
 
             elapsed = now - state["last_manager_message_time"]
             if elapsed < PAUSE_MINUTES * 60:
-                continue  # Менеджер ещё "активен" по времени, продолжаем молчать
+                continue
 
             pending = state.get("pending_client_messages", [])
             if not pending:
-                # Менеджер не писал 10+ минут, но и клиент молчит — просто снимаем паузу, ничего не отвечаем
                 state["paused"] = False
+                await set_topic_muted(application.bot, user_id, False)
                 continue
 
-            # Менеджер не писал 10+ минут, и есть новые сообщения клиента — AI просыпается и отвечает
             try:
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
@@ -410,6 +426,7 @@ async def pause_checker_loop(application):
 
                 state["paused"] = False
                 state["pending_client_messages"] = []
+                await set_topic_muted(application.bot, user_id, False)
 
             except Exception as e:
                 logging.error(f"Ошибка при возобновлении AI после паузы: {e}")
