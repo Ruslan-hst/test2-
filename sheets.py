@@ -1,6 +1,6 @@
 """
 sheets.py — все функции работы с Google Sheets
-(остатки склада + связь клиентов с темами в группе)
+(остатки склада + связь клиентов с темами в группе + связь со сделками Битрикс)
 """
 
 import os
@@ -53,27 +53,46 @@ def get_chats_sheet():
 
 
 def load_topic_mapping():
+    """Загружает все связи user_id <-> thread_id <-> deal_id из Google Sheets при старте бота."""
     try:
         sheet = get_chats_sheet()
         rows = sheet.get_all_records()
         client_topics = {}
         topic_to_client = {}
         topic_names = {}
+        client_deals = {}
         for r in rows:
             uid = int(r["user_id"])
             tid = int(r["thread_id"])
             client_topics[uid] = tid
             topic_to_client[tid] = uid
             topic_names[uid] = r.get("user_name", "Клиент")
-        return client_topics, topic_to_client, topic_names
+            deal_id_raw = r.get("deal_id", "")
+            if deal_id_raw:
+                client_deals[uid] = int(deal_id_raw)
+        return client_topics, topic_to_client, topic_names, client_deals
     except Exception as e:
         logging.error(f"Ошибка загрузки маппинга из Sheets: {e}")
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
 
-def save_topic_mapping(user_id, thread_id, user_name, username, phone=""):
+def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_id=""):
+    """Сохраняет новую связь user_id <-> thread_id <-> deal_id в Google Sheets."""
     try:
         sheet = get_chats_sheet()
-        sheet.append_row([str(user_id), str(thread_id), user_name, username, phone])
+        sheet.append_row([str(user_id), str(thread_id), user_name, username, phone, str(deal_id)])
     except Exception as e:
         logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
+
+
+def update_deal_id(user_id, deal_id):
+    """Обновляет deal_id для существующей строки клиента (если сделка создалась позже темы)."""
+    try:
+        sheet = get_chats_sheet()
+        rows = sheet.get_all_records()
+        for idx, r in enumerate(rows, start=2):  # строка 1 — заголовки
+            if int(r["user_id"]) == user_id:
+                sheet.update_cell(idx, 6, str(deal_id))  # колонка F = 6
+                return
+    except Exception as e:
+        logging.error(f"Ошибка обновления deal_id в Sheets: {e}")
