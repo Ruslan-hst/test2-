@@ -23,6 +23,7 @@ def create_deal(user_name, username, phone="", channel="Telegram"):
     """
     Создаёт новую сделку в Битрикс24 для нового клиента.
     Название формата: "AI Telegram | Имя клиента"
+    Стадия — "AI" (UC_46YL1F), чтобы сразу было видно что сделку завёл бот.
     Возвращает ID сделки (int) или None если не удалось создать.
     """
     if not is_bitrix_enabled():
@@ -35,6 +36,7 @@ def create_deal(user_name, username, phone="", channel="Telegram"):
     payload = {
         "fields": {
             "TITLE": title,
+            "STAGE_ID": "UC_46YL1F",
             "SOURCE_ID": "WEB",
             "SOURCE_DESCRIPTION": f"{channel} бот — Хоккейные клюшки ТОП",
             "COMMENTS": comments,
