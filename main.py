@@ -1,6 +1,6 @@
 """
 main.py — запуск Telegram-бота и обработчики сообщений.
-Вся логика AI вынесена в ai_logic.py, работа с Google Sheets — в sheets.py.
+Вся логика AI вынесена в ai_logic.py, работа с Google Sheets — в sheets.py, Битрикс — в bitrix.py.
 """
 
 import os
@@ -13,8 +13,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
+import bitrix
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,7 +26,7 @@ ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 PAUSE_MINUTES = 10
 CHECK_INTERVAL_SECONDS = 120
 
-client_topics, topic_to_client, topic_names = load_topic_mapping()
+client_topics, topic_to_client, topic_names, client_deals = load_topic_mapping()
 
 pause_state = {}
 
@@ -61,6 +62,13 @@ async def set_topic_muted(bot, user_id, muted: bool):
         logging.error(f"Ошибка переименования темы: {e}")
 
 
+def sync_to_bitrix(user_id, author_label, text):
+    """Дублирует сообщение в комментарий сделки Битрикс, если сделка существует."""
+    deal_id = client_deals.get(user_id)
+    if deal_id:
+        bitrix.add_comment(deal_id, author_label, text)
+
+
 async def get_or_create_topic(context, user_id, user_name, username):
     if user_id in client_topics:
         return client_topics[user_id]
@@ -78,7 +86,12 @@ async def get_or_create_topic(context, user_id, user_name, username):
     topic_to_client[thread_id] = user_id
     topic_names[user_id] = topic_name
 
-    save_topic_mapping(user_id, thread_id, user_name, username)
+    # Создаём сделку в Битрикс для нового клиента
+    deal_id = bitrix.create_deal(user_name, username)
+    if deal_id:
+        client_deals[user_id] = deal_id
+
+    save_topic_mapping(user_id, thread_id, user_name, username, deal_id=deal_id or "")
 
     try:
         await context.bot.send_message(
@@ -144,6 +157,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Ошибка дублирования в группу: {e}")
 
+    sync_to_bitrix(user_id, "Клиент", raw_text)
+
     if is_ai_paused(user_id):
         pause_state[user_id]["pending_client_messages"].append(raw_text)
         return
@@ -162,6 +177,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
         else:
             await update.message.reply_text(answer)
+
+        sync_to_bitrix(user_id, "AI", answer)
 
         try:
             thread_id = client_topics.get(user_id)
@@ -189,6 +206,8 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         await context.bot.send_message(chat_id=user_id, text=reply_text)
         await update.message.reply_text("✅ Отправлено клиенту")
+
+        sync_to_bitrix(user_id, "Менеджер", reply_text)
 
         if user_id not in pause_state:
             pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
@@ -251,6 +270,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(answer)
 
+        sync_to_bitrix(user_id, "Клиент", "[отправил фото клюшки]")
+        sync_to_bitrix(user_id, "AI", answer)
+
         try:
             thread_id = await get_or_create_topic(context, user_id, user_name, username)
             await context.bot.send_message(
@@ -301,6 +323,8 @@ async def pause_checker_loop(application):
                 answer, call_manager = ask_ai_sync(user_id, content)
 
                 await application.bot.send_message(chat_id=user_id, text=answer)
+
+                sync_to_bitrix(user_id, "AI", answer)
 
                 thread_id = client_topics.get(user_id)
                 if thread_id:
