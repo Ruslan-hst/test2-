@@ -7,30 +7,37 @@ import logging
 import httpx
 
 BITRIX_WEBHOOK_URL = os.environ.get("BITRIX_WEBHOOK_URL", "")
+BITRIX_PORTAL_URL = os.environ.get("BITRIX_PORTAL_URL", "https://b24-9v9hth.bitrix24.ru")
 
 
 def is_bitrix_enabled():
     return bool(BITRIX_WEBHOOK_URL)
 
 
-def create_deal(user_name, username, phone=""):
+def get_deal_link(deal_id):
+    """Прямая ссылка на карточку сделки в интерфейсе Битрикс24."""
+    return f"{BITRIX_PORTAL_URL}/crm/deal/details/{deal_id}/"
+
+
+def create_deal(user_name, username, phone="", channel="Telegram"):
     """
     Создаёт новую сделку в Битрикс24 для нового клиента.
+    Название формата: "AI Telegram | Имя клиента"
     Возвращает ID сделки (int) или None если не удалось создать.
     """
     if not is_bitrix_enabled():
         return None
 
-    title = f"Telegram | {user_name}"
-    if username and username != "без username":
-        title += f" (@{username})"
+    title = f"AI {channel} | {user_name}"
+
+    comments = f"Клиент: {user_name}\nUsername: @{username}\nТелефон: {phone or 'не указан'}"
 
     payload = {
         "fields": {
             "TITLE": title,
             "SOURCE_ID": "WEB",
-            "SOURCE_DESCRIPTION": "Telegram бот — Хоккейные клюшки ТОП",
-            "COMMENTS": f"Клиент: {user_name}\nUsername: @{username}\nТелефон: {phone or 'не указан'}",
+            "SOURCE_DESCRIPTION": f"{channel} бот — Хоккейные клюшки ТОП",
+            "COMMENTS": comments,
         }
     }
 
