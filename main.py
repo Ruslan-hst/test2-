@@ -120,9 +120,17 @@ async def activate_manager_pause(context_bot, user_id, user_name, username, raw_
     try:
         thread_id = client_topics.get(user_id)
         topic_link = get_topic_link(thread_id) if thread_id else ""
+
+        deal_id = client_deals.get(user_id)
+        deal_link = bitrix.get_deal_link(deal_id) if deal_id else ""
+
+        message_text = f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}\n\n👉 Перейти в чат: {topic_link}"
+        if deal_link:
+            message_text += f"\n📋 Сделка в Битрикс: {deal_link}"
+
         await context_bot.send_message(
             chat_id=ADMIN_PERSONAL_ID,
-            text=f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}\n\n👉 Перейти в чат: {topic_link}"
+            text=message_text
         )
     except Exception as e:
         logging.error(f"Ошибка уведомления про менеджера: {e}")
