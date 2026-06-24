@@ -23,12 +23,17 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
 ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
-PAUSE_MINUTES = 10
+PAUSE_MINUTES = 10  # Обычная пауза (после "позови менеджера") — AI может вернуться сам
 CHECK_INTERVAL_SECONDS = 120
 
 client_topics, topic_to_client, topic_names, client_deals = load_topic_mapping()
 
+# Состояние обычной паузы AI: { user_id: {"paused": bool, "last_manager_message_time": ts, "pending_client_messages": []} }
 pause_state = {}
+
+# Состояние ЖЁСТКОЙ эскалации: { user_id: True/False }
+# Если True — AI полностью молчит, ничего не проверяется фоном, выход только через /включить
+escalated = {}
 
 UDS_BUTTONS = InlineKeyboardMarkup([
     [
@@ -43,13 +48,24 @@ def get_topic_link(thread_id):
     return f"https://t.me/c/{group_id_for_link}/{thread_id}"
 
 
-async def set_topic_muted(bot, user_id, muted: bool):
+async def set_topic_status(bot, user_id, status: str):
+    """
+    Меняет название темы добавляя индикатор.
+    status: "normal" (без эмодзи), "paused" (🔇 обычная пауза), "escalated" (⚠️ серьёзная эскалация)
+    """
     thread_id = client_topics.get(user_id)
     if not thread_id:
         return
 
     base_name = topic_names.get(user_id, "Клиент")
-    new_name = f"🔇 {base_name}" if muted else base_name
+
+    if status == "paused":
+        new_name = f"🔇 {base_name}"
+    elif status == "escalated":
+        new_name = f"⚠️ {base_name}"
+    else:
+        new_name = base_name
+
     new_name = new_name[:128]
 
     try:
@@ -63,7 +79,6 @@ async def set_topic_muted(bot, user_id, muted: bool):
 
 
 def sync_to_bitrix(user_id, author_label, text):
-    """Дублирует сообщение в комментарий сделки Битрикс, если сделка существует."""
     deal_id = client_deals.get(user_id)
     if deal_id:
         bitrix.add_comment(deal_id, author_label, text)
@@ -86,7 +101,6 @@ async def get_or_create_topic(context, user_id, user_name, username):
     topic_to_client[thread_id] = user_id
     topic_names[user_id] = topic_name
 
-    # Создаём сделку в Битрикс для нового клиента
     deal_id = bitrix.create_deal(user_name, username)
     if deal_id:
         client_deals[user_id] = deal_id
@@ -109,13 +123,18 @@ def is_ai_paused(user_id):
     return state is not None and state.get("paused", False)
 
 
+def is_escalated(user_id):
+    return escalated.get(user_id, False)
+
+
 async def activate_manager_pause(context_bot, user_id, user_name, username, raw_text):
+    """Обычная пауза — после явной просьбы клиента позвать менеджера."""
     pause_state[user_id] = {
         "paused": True,
         "last_manager_message_time": time.time(),
         "pending_client_messages": []
     }
-    await set_topic_muted(context_bot, user_id, True)
+    await set_topic_status(context_bot, user_id, "paused")
 
     try:
         thread_id = client_topics.get(user_id)
@@ -134,6 +153,40 @@ async def activate_manager_pause(context_bot, user_id, user_name, username, raw_
         )
     except Exception as e:
         logging.error(f"Ошибка уведомления про менеджера: {e}")
+
+
+async def activate_escalation(context_bot, user_id, user_name, username, raw_text):
+    """Жёсткая эскалация — конфликт/жалоба/опт/AI не уверен. Полная блокировка AI до /включить."""
+    escalated[user_id] = True
+    # Если была обычная пауза - она больше не актуальна, эскалация важнее
+    if user_id in pause_state:
+        pause_state[user_id]["paused"] = False
+
+    await set_topic_status(context_bot, user_id, "escalated")
+
+    try:
+        thread_id = client_topics.get(user_id)
+        topic_link = get_topic_link(thread_id) if thread_id else ""
+
+        deal_id = client_deals.get(user_id)
+        deal_link = bitrix.get_deal_link(deal_id) if deal_id else ""
+
+        message_text = (
+            f"⚠️ ТРЕБУЕТСЯ ВНИМАНИЕ! Сложный случай у клиента {user_name} (@{username})\n\n"
+            f"Сообщение: {raw_text}\n\n"
+            f"AI приостановлен полностью для этого клиента.\n"
+            f"Когда разберёшься — напиши /включить в этой теме.\n\n"
+            f"👉 Перейти в чат: {topic_link}"
+        )
+        if deal_link:
+            message_text += f"\n📋 Сделка в Битрикс: {deal_link}"
+
+        await context_bot.send_message(
+            chat_id=ADMIN_PERSONAL_ID,
+            text=message_text
+        )
+    except Exception as e:
+        logging.error(f"Ошибка уведомления про эскалацию: {e}")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,13 +220,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sync_to_bitrix(user_id, "Клиент", raw_text)
 
+    # Жёсткая эскалация - AI полностью молчит, никаких исключений
+    if is_escalated(user_id):
+        return
+
     if is_ai_paused(user_id):
         pause_state[user_id]["pending_client_messages"].append(raw_text)
         return
 
     try:
         await update.message.chat.send_action("typing")
-        answer, call_manager = ask_ai_sync(user_id, text)
+        answer, call_manager, escalate = ask_ai_sync(user_id, text)
+
+        if escalate:
+            await update.message.reply_text(answer)
+            sync_to_bitrix(user_id, "AI", answer)
+            await activate_escalation(context.bot, user_id, user_name, username, raw_text)
+            return
 
         if call_manager:
             await update.message.reply_text("Передаю тебя менеджеру — ответим быстро! 👇")
@@ -211,19 +274,28 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = topic_to_client[thread_id]
     reply_text = update.message.text
 
+    # Команда возврата AI после жёсткой эскалации
+    if reply_text and reply_text.strip() == "/включить":
+        escalated[user_id] = False
+        await set_topic_status(context.bot, user_id, "normal")
+        await update.message.reply_text("✅ AI снова включён для этого клиента")
+        return
+
     try:
         await context.bot.send_message(chat_id=user_id, text=reply_text)
         await update.message.reply_text("✅ Отправлено клиенту")
 
         sync_to_bitrix(user_id, "Менеджер", reply_text)
 
-        if user_id not in pause_state:
-            pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
-        else:
-            pause_state[user_id]["paused"] = True
-            pause_state[user_id]["last_manager_message_time"] = time.time()
+        # Ручной ответ менеджера = обычная пауза (не трогаем escalated - если был ⚠️, остаётся пока не /включить)
+        if not is_escalated(user_id):
+            if user_id not in pause_state:
+                pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
+            else:
+                pause_state[user_id]["paused"] = True
+                pause_state[user_id]["last_manager_message_time"] = time.time()
 
-        await set_topic_muted(context.bot, user_id, True)
+            await set_topic_status(context.bot, user_id, "paused")
 
     except Exception as e:
         logging.error(f"Ошибка отправки ответа клиенту: {e}")
@@ -237,6 +309,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
+
+    if is_escalated(user_id):
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            photo = update.message.photo[-1]
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id,
+                caption="👤 Клиент отправил фото 📸 (AI на паузе из-за эскалации)"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото при эскалации: {e}")
+        return
 
     if is_ai_paused(user_id):
         pause_state[user_id]["pending_client_messages"].append("[Клиент отправил фото]")
@@ -306,11 +392,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def pause_checker_loop(application):
+    """Проверяет только ОБЫЧНЫЕ паузы. Жёсткая эскалация сюда не попадает - выход только вручную."""
     while True:
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         now = time.time()
 
         for user_id, state in list(pause_state.items()):
+            if is_escalated(user_id):
+                continue  # эскалация важнее, фоновая проверка её не трогает
+
             if not state.get("paused"):
                 continue
 
@@ -321,17 +411,16 @@ async def pause_checker_loop(application):
             pending = state.get("pending_client_messages", [])
             if not pending:
                 state["paused"] = False
-                await set_topic_muted(application.bot, user_id, False)
+                await set_topic_status(application.bot, user_id, "normal")
                 continue
 
             try:
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
 
-                answer, call_manager = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate = ask_ai_sync(user_id, content)
 
                 await application.bot.send_message(chat_id=user_id, text=answer)
-
                 sync_to_bitrix(user_id, "AI", answer)
 
                 thread_id = client_topics.get(user_id)
@@ -344,12 +433,15 @@ async def pause_checker_loop(application):
 
                 state["paused"] = False
                 state["pending_client_messages"] = []
-                await set_topic_muted(application.bot, user_id, False)
 
-                if call_manager:
+                if escalate:
+                    await activate_escalation(application.bot, user_id, topic_names.get(user_id, "Клиент"), "", combined_text)
+                elif call_manager:
                     state["paused"] = True
                     state["last_manager_message_time"] = time.time()
-                    await set_topic_muted(application.bot, user_id, True)
+                    await set_topic_status(application.bot, user_id, "paused")
+                else:
+                    await set_topic_status(application.bot, user_id, "normal")
 
             except Exception as e:
                 logging.error(f"Ошибка при возобновлении AI после паузы: {e}")
