@@ -85,3 +85,49 @@ def add_comment(deal_id, author_label, text):
     except Exception as e:
         logging.error(f"Исключение при добавлении комментария Битрикс: {e}")
         return False
+
+
+# Поле "❗Классификация❗" — список enumeration, каждому варианту соответствует ID
+CLASSIFICATION_FIELD = "UF_CRM_1770200849934"
+CLASSIFICATION_IDS = {
+    "JR": "371",       # JR 20-50
+    "INT": "373",      # INT 55-65
+    "SR": "375",       # SR 70 и выше
+    "ДЕШЕВЫЕ": "377",  # Дешевые
+    "ОРИГИНАЛЫ": "379",  # Оригинал
+    "ВРАТАРСКИЕ": "381",  # Вратари
+}
+
+
+def update_deal_classification(deal_id, segment_code):
+    """
+    Записывает классификацию в карточку сделки.
+    segment_code — один из: JR, INT, SR, ДЕШЕВЫЕ, ОРИГИНАЛЫ, ВРАТАРСКИЕ
+    """
+    if not is_bitrix_enabled() or not deal_id:
+        return False
+
+    field_value = CLASSIFICATION_IDS.get(segment_code.upper())
+    if not field_value:
+        logging.error(f"Неизвестный код сегмента классификации: {segment_code}")
+        return False
+
+    payload = {
+        "id": deal_id,
+        "fields": {
+            CLASSIFICATION_FIELD: field_value
+        }
+    }
+
+    try:
+        response = httpx.post(f"{BITRIX_WEBHOOK_URL}crm.deal.update.json", json=payload, timeout=10)
+        result = response.json()
+        if result.get("result"):
+            logging.info(f"Классификация {segment_code} записана в сделку {deal_id}")
+            return True
+        else:
+            logging.error(f"Ошибка записи классификации Битрикс: {result}")
+            return False
+    except Exception as e:
+        logging.error(f"Исключение при записи классификации Битрикс: {e}")
+        return False
