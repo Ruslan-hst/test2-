@@ -230,7 +230,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await update.message.chat.send_action("typing")
-        answer, call_manager, escalate = ask_ai_sync(user_id, text)
+        answer, call_manager, escalate, classification = ask_ai_sync(user_id, text)
 
         if escalate:
             await update.message.reply_text(answer)
@@ -242,6 +242,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Передаю тебя менеджеру — ответим быстро! 👇")
             await activate_manager_pause(context.bot, user_id, user_name, username, raw_text)
             return
+
+        if classification:
+            deal_id = client_deals.get(user_id)
+            if deal_id:
+                bitrix.update_deal_classification(deal_id, classification)
 
         uds_keywords = ["uds", "удс", "карта", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
         if any(w in answer.lower() for w in uds_keywords):
@@ -418,10 +423,15 @@ async def pause_checker_loop(application):
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
 
-                answer, call_manager, escalate = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate, classification = ask_ai_sync(user_id, content)
 
                 await application.bot.send_message(chat_id=user_id, text=answer)
                 sync_to_bitrix(user_id, "AI", answer)
+
+                if classification:
+                    deal_id = client_deals.get(user_id)
+                    if deal_id:
+                        bitrix.update_deal_classification(deal_id, classification)
 
                 thread_id = client_topics.get(user_id)
                 if thread_id:
