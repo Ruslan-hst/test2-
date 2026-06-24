@@ -23,16 +23,12 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
 ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
-PAUSE_MINUTES = 10  # Обычная пауза (после "позови менеджера") — AI может вернуться сам
+PAUSE_MINUTES = 10
 CHECK_INTERVAL_SECONDS = 120
 
 client_topics, topic_to_client, topic_names, client_deals = load_topic_mapping()
 
-# Состояние обычной паузы AI: { user_id: {"paused": bool, "last_manager_message_time": ts, "pending_client_messages": []} }
 pause_state = {}
-
-# Состояние ЖЁСТКОЙ эскалации: { user_id: True/False }
-# Если True — AI полностью молчит, ничего не проверяется фоном, выход только через /включить
 escalated = {}
 
 UDS_BUTTONS = InlineKeyboardMarkup([
@@ -49,10 +45,6 @@ def get_topic_link(thread_id):
 
 
 async def set_topic_status(bot, user_id, status: str):
-    """
-    Меняет название темы добавляя индикатор.
-    status: "normal" (без эмодзи), "paused" (🔇 обычная пауза), "escalated" (⚠️ серьёзная эскалация)
-    """
     thread_id = client_topics.get(user_id)
     if not thread_id:
         return
@@ -128,7 +120,6 @@ def is_escalated(user_id):
 
 
 async def activate_manager_pause(context_bot, user_id, user_name, username, raw_text):
-    """Обычная пауза — после явной просьбы клиента позвать менеджера."""
     pause_state[user_id] = {
         "paused": True,
         "last_manager_message_time": time.time(),
@@ -156,9 +147,7 @@ async def activate_manager_pause(context_bot, user_id, user_name, username, raw_
 
 
 async def activate_escalation(context_bot, user_id, user_name, username, raw_text):
-    """Жёсткая эскалация — конфликт/жалоба/опт/AI не уверен. Полная блокировка AI до /включить."""
     escalated[user_id] = True
-    # Если была обычная пауза - она больше не актуальна, эскалация важнее
     if user_id in pause_state:
         pause_state[user_id]["paused"] = False
 
@@ -220,7 +209,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     sync_to_bitrix(user_id, "Клиент", raw_text)
 
-    # Жёсткая эскалация - AI полностью молчит, никаких исключений
     if is_escalated(user_id):
         return
 
@@ -279,7 +267,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = topic_to_client[thread_id]
     reply_text = update.message.text
 
-    # Команда возврата AI после жёсткой эскалации
     if reply_text and reply_text.strip() == "/включить":
         escalated[user_id] = False
         await set_topic_status(context.bot, user_id, "normal")
@@ -292,7 +279,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         sync_to_bitrix(user_id, "Менеджер", reply_text)
 
-        # Ручной ответ менеджера = обычная пауза (не трогаем escalated - если был ⚠️, остаётся пока не /включить)
         if not is_escalated(user_id):
             if user_id not in pause_state:
                 pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
@@ -397,14 +383,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def pause_checker_loop(application):
-    """Проверяет только ОБЫЧНЫЕ паузы. Жёсткая эскалация сюда не попадает - выход только вручную."""
     while True:
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         now = time.time()
 
         for user_id, state in list(pause_state.items()):
             if is_escalated(user_id):
-                continue  # эскалация важнее, фоновая проверка её не трогает
+                continue
 
             if not state.get("paused"):
                 continue
