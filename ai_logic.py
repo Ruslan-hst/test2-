@@ -22,6 +22,11 @@ CALL_MANAGER_MARKER = "[CALL_MANAGER]"
 # AI полностью замолкает до ручной команды /включить от Руслана, никакого автовозврата.
 ESCALATE_MARKER = "[ESCALATE]"
 
+# Маркер классификации потребности клиента — AI указывает сегмент когда понимает что ищет клиент.
+# Формат в ответе AI: [CLASSIFY:SR] или [CLASSIFY:JR] и т.д.
+CLASSIFY_PREFIX = "[CLASSIFY:"
+VALID_SEGMENTS = ["SR", "INT", "JR", "ДЕШЕВЫЕ", "ОРИГИНАЛЫ", "ВРАТАРСКИЕ"]
+
 dialogs = {}
 
 
@@ -62,8 +67,9 @@ def build_system_prompt():
 - Сравни увиденное с нашим складом и скажи есть ли похожая модель
 - Если не уверен — честно скажи что не можешь точно определить модель, предложи уточнить характеристики словами
 
-КЛАССИФИКАЦИЯ ПОТРЕБНОСТИ (важно для CRM — отслеживай и сообщай в ответе если определил):
-Как только понимаешь что именно ищет клиент — мысленно определи сегмент:
+КЛАССИФИКАЦИЯ ПОТРЕБНОСТИ (важно — записывается в CRM, используй маркер чтобы зафиксировать):
+Как только понимаешь что именно ищет клиент — определи сегмент и добавь в конец ответа маркер в формате {CLASSIFY_PREFIX}СЕГМЕНТ] (например {CLASSIFY_PREFIX}SR] или {CLASSIFY_PREFIX}JR]). Этот маркер не виден клиенту, это техническая метка для CRM.
+Возможные сегменты:
 - SR — флекс 70 и выше (взрослый/сильный игрок)
 - INT — флекс 55-65 (подросток)
 - JR — флекс 20-50 (ребёнок/юниор)
@@ -71,6 +77,7 @@ def build_system_prompt():
 - ОРИГИНАЛЫ — клиент явно говорит что хочет только оригинал, не реплику (независимо от флекса/возраста — это перекрывает SR/INT/JR)
 - ВРАТАРСКИЕ — клиент спрашивает про вратарскую клюшку или форму
 Приоритет: ОРИГИНАЛЫ и ВРАТАРСКИЕ и ДЕШЕВЫЕ перекрывают определение по флексу (SR/INT/JR), если клиент явно их назвал.
+Ставь маркер классификации ОДИН РАЗ, как только определился — повторно в каждом сообщении не нужно.
 
 КОГДА ЗВАТЬ МЕНЕДЖЕРА — ОБЫЧНАЯ ПРОСЬБА (важно — будь внимателен к разнице):
 - Если клиент ЯВНО просит позвать менеджера/человека/оператора ("позови менеджера", "хочу менеджера", "пусть менеджер ответит", "переключи на человека") — в САМОМ КОНЦЕ своего ответа добавь служебный маркер {CALL_MANAGER_MARKER} (он не будет виден клиенту, это техническая метка)
@@ -97,7 +104,7 @@ def build_system_prompt():
 
 
 def ask_ai_sync(user_id, content):
-    """Синхронный вызов AI. Возвращает (answer_text, call_manager: bool, escalate: bool)."""
+    """Синхронный вызов AI. Возвращает (answer_text, call_manager: bool, escalate: bool, classification: str|None)."""
     if user_id not in dialogs:
         dialogs[user_id] = []
 
@@ -115,11 +122,25 @@ def ask_ai_sync(user_id, content):
     call_manager = CALL_MANAGER_MARKER in raw_answer
     escalate = ESCALATE_MARKER in raw_answer
 
-    clean_answer = raw_answer.replace(CALL_MANAGER_MARKER, "").replace(ESCALATE_MARKER, "").strip()
+    classification = None
+    if CLASSIFY_PREFIX in raw_answer:
+        try:
+            start = raw_answer.index(CLASSIFY_PREFIX) + len(CLASSIFY_PREFIX)
+            end = raw_answer.index("]", start)
+            candidate = raw_answer[start:end].strip().upper()
+            if candidate in VALID_SEGMENTS:
+                classification = candidate
+        except (ValueError, IndexError):
+            pass
+
+    clean_answer = raw_answer.replace(CALL_MANAGER_MARKER, "").replace(ESCALATE_MARKER, "")
+    if classification:
+        clean_answer = clean_answer.replace(f"{CLASSIFY_PREFIX}{classification}]", "")
+    clean_answer = clean_answer.strip()
 
     dialogs[user_id].append({"role": "assistant", "content": clean_answer})
 
-    return clean_answer, call_manager, escalate
+    return clean_answer, call_manager, escalate, classification
 
 
 def ask_ai_with_image(image_content_block, caption_text):
