@@ -1,6 +1,6 @@
 """
 sheets.py — все функции работы с Google Sheets
-(остатки склада + связь клиентов с темами в группе + связь со сделками Битрикс)
+(остатки склада + связь клиентов с темами в группе + связь со сделками Битрикс + данные для касаний)
 """
 
 import os
@@ -8,6 +8,7 @@ import json
 import base64
 import logging
 import time
+from datetime import datetime, timezone
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -77,10 +78,19 @@ def load_topic_mapping():
 
 
 def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_id=""):
-    """Сохраняет новую связь user_id <-> thread_id <-> deal_id в Google Sheets."""
+    """Сохраняет новую связь user_id <-> thread_id <-> deal_id в Google Sheets.
+    Также сразу заполняет last_client_message_time (этим сообщением клиент только что написал)
+    и touch_number=0, status="active" для нового клиента."""
     try:
         sheet = get_chats_sheet()
-        sheet.append_row([str(user_id), str(thread_id), user_name, username, phone, str(deal_id)])
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sheet.append_row([
+            str(user_id), str(thread_id), user_name, username, phone, str(deal_id),
+            now_iso,  # G — last_client_message_time
+            "",       # H — last_manager_message_time
+            "0",      # I — touch_number
+            "active"  # J — status
+        ])
     except Exception as e:
         logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
 
@@ -90,9 +100,44 @@ def update_deal_id(user_id, deal_id):
     try:
         sheet = get_chats_sheet()
         rows = sheet.get_all_records()
-        for idx, r in enumerate(rows, start=2):  # строка 1 — заголовки
+        for idx, r in enumerate(rows, start=2):
             if int(r["user_id"]) == user_id:
                 sheet.update_cell(idx, 6, str(deal_id))  # колонка F = 6
                 return
     except Exception as e:
         logging.error(f"Ошибка обновления deal_id в Sheets: {e}")
+
+
+def _find_row_index(sheet, user_id):
+    """Вспомогательная функция — находит номер строки клиента в таблице (или None)."""
+    rows = sheet.get_all_records()
+    for idx, r in enumerate(rows, start=2):
+        if int(r["user_id"]) == user_id:
+            return idx
+    return None
+
+
+def update_last_client_message(user_id):
+    """Обновляет время последнего сообщения КЛИЕНТА и сбрасывает touch_number на 0 (клиент снова активен)."""
+    try:
+        sheet = get_chats_sheet()
+        idx = _find_row_index(sheet, user_id)
+        if idx:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            sheet.update_cell(idx, 7, now_iso)    # G = last_client_message_time
+            sheet.update_cell(idx, 9, "0")         # I = touch_number сброс, клиент написал сам
+            sheet.update_cell(idx, 10, "active")   # J = status
+    except Exception as e:
+        logging.error(f"Ошибка обновления last_client_message_time: {e}")
+
+
+def update_last_manager_message(user_id):
+    """Обновляет время последнего сообщения МЕНЕДЖЕРА (когда Руслан написал в теме)."""
+    try:
+        sheet = get_chats_sheet()
+        idx = _find_row_index(sheet, user_id)
+        if idx:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            sheet.update_cell(idx, 8, now_iso)  # H = last_manager_message_time
+    except Exception as e:
+        logging.error(f"Ошибка обновления last_manager_message_time: {e}")
