@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping, update_deal_id
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
 import bitrix
 
@@ -208,6 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка дублирования в группу: {e}")
 
     sync_to_bitrix(user_id, "Клиент", raw_text)
+    update_last_client_message(user_id)
 
     if is_escalated(user_id):
         return
@@ -278,6 +279,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("✅ Отправлено клиенту")
 
         sync_to_bitrix(user_id, "Менеджер", reply_text)
+        update_last_manager_message(user_id)
 
         if not is_escalated(user_id):
             if user_id not in pause_state:
@@ -357,6 +359,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         sync_to_bitrix(user_id, "Клиент", "[отправил фото клюшки]")
         sync_to_bitrix(user_id, "AI", answer)
+        update_last_client_message(user_id)
 
         try:
             thread_id = await get_or_create_topic(context, user_id, user_name, username)
@@ -444,10 +447,63 @@ async def pause_checker_loop(application):
 
 flask_app = Flask(__name__)
 
+telegram_app_ref = {"app": None}
+
+N8N_SECRET = os.environ.get("N8N_SECRET", "change_me_please")
+
 
 @flask_app.route("/")
 def index():
     return "OK"
+
+
+@flask_app.route("/send-touch", methods=["POST"])
+def send_touch():
+    """
+    Эндпоинт для n8n - принимает готовый текст касания/рассылки и отправляет клиенту,
+    дублируя в группу и Битрикс через уже существующую логику бота.
+    Ожидает JSON: {"secret": "...", "user_id": 123, "text": "...", "next_touch_number": 1}
+    """
+    from flask import request, jsonify
+    data = request.get_json(force=True, silent=True) or {}
+
+    if data.get("secret") != N8N_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    user_id = data.get("user_id")
+    text = data.get("text")
+    next_touch_number = data.get("next_touch_number")
+
+    if not user_id or not text:
+        return jsonify({"error": "user_id and text are required"}), 400
+
+    app = telegram_app_ref["app"]
+    if not app:
+        return jsonify({"error": "bot not ready yet"}), 503
+
+    async def _send():
+        try:
+            user_id_int = int(user_id)
+            await app.bot.send_message(chat_id=user_id_int, text=text)
+
+            sync_to_bitrix(user_id_int, "AI (касание)", text)
+
+            thread_id = client_topics.get(user_id_int)
+            if thread_id:
+                await app.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    message_thread_id=thread_id,
+                    text=f"🤖 AI (касание #{next_touch_number}): {text}"
+                )
+
+            if next_touch_number is not None:
+                update_touch_number(user_id_int, next_touch_number)
+
+        except Exception as e:
+            logging.error(f"Ошибка в send_touch: {e}")
+
+    asyncio.run_coroutine_threadsafe(_send(), app.loop_for_flask)
+    return jsonify({"status": "queued"}), 200
 
 
 def run_flask():
@@ -463,6 +519,9 @@ async def run_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+    app.loop_for_flask = asyncio.get_event_loop()
+    telegram_app_ref["app"] = app
 
     asyncio.create_task(pause_checker_loop(app))
 
