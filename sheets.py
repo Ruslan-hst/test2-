@@ -141,3 +141,14 @@ def update_last_manager_message(user_id):
             sheet.update_cell(idx, 8, now_iso)  # H = last_manager_message_time
     except Exception as e:
         logging.error(f"Ошибка обновления last_manager_message_time: {e}")
+
+
+def update_touch_number(user_id, touch_number):
+    """Обновляет touch_number для клиента (вызывается после успешной отправки касания)."""
+    try:
+        sheet = get_chats_sheet()
+        idx = _find_row_index(sheet, user_id)
+        if idx:
+            sheet.update_cell(idx, 9, str(touch_number))  # I = touch_number
+    except Exception as e:
+        logging.error(f"Ошибка обновления touch_number: {e}")
