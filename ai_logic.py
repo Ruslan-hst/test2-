@@ -114,7 +114,7 @@ def ask_ai_sync(user_id, content):
         model=AI_MODEL,
         messages=[
             {"role": "system", "content": build_system_prompt()}
-        ] + dialogs[user_id][-10:]
+        ] + dialogs[user_id][-30:]
     )
 
     raw_answer = response.choices[0].message.content
