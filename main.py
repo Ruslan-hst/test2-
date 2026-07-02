@@ -502,7 +502,7 @@ def send_touch():
         except Exception as e:
             logging.error(f"Ошибка в send_touch: {e}")
 
-    asyncio.run_coroutine_threadsafe(_send(), app.loop_for_flask)
+    asyncio.run_coroutine_threadsafe(_send(), telegram_app_ref["loop"])
     return jsonify({"status": "queued"}), 200
 
 
@@ -520,7 +520,7 @@ async def run_bot():
     await app.start()
     await app.updater.start_polling()
 
-    app.loop_for_flask = asyncio.get_event_loop()
+    telegram_app_ref["loop"] = asyncio.get_event_loop()
     telegram_app_ref["app"] = app
 
     asyncio.create_task(pause_checker_loop(app))
