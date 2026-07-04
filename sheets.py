@@ -9,7 +9,7 @@ import base64
 import logging
 import time
 from datetime import datetime, timezone
-sheets.py — все функции работы с Google Sheets
+sheets.py - все функции работы с Google Sheets
 (остатки склада + связь клиентов с темами в группе + связь со сделками Битрикс + данные для касаний)
 """
 
