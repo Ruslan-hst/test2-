@@ -1,5 +1,5 @@
 """
-sheets.py — все функции работы с Google Sheets
+sheets.py - все функции работы с Google Sheets
 (остатки склада + связь клиентов с темами в группе + связь со сделками Битрикс + данные для касаний)
 """
 
@@ -93,10 +93,10 @@ def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_i
         now_iso = datetime.now(timezone.utc).isoformat()
         sheet.append_row([
             str(user_id), str(thread_id), user_name, username, phone, str(deal_id),
-            now_iso,  # G — last_client_message_time
-            "",       # H — last_manager_message_time
-            "0",      # I — touch_number
-            "active"  # J — status
+            now_iso,  # G - last_client_message_time
+            "",       # H - last_manager_message_time
+            "0",      # I - touch_number
+            "active"  # J - status
         ])
     except Exception as e:
         logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
@@ -231,10 +231,10 @@ def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_i
         now_iso = datetime.now(timezone.utc).isoformat()
         sheet.append_row([
             str(user_id), str(thread_id), user_name, username, phone, str(deal_id),
-            now_iso,  # G — last_client_message_time
-            "",       # H — last_manager_message_time
-            "0",      # I — touch_number
-            "active"  # J — status
+            now_iso,  # G - last_client_message_time
+            "",       # H - last_manager_message_time
+            "0",      # I - touch_number
+            "active"  # J - status
         ])
     except Exception as e:
         logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
@@ -254,7 +254,7 @@ def update_deal_id(user_id, deal_id):
 
 
 def _find_row_index(sheet, user_id):
-    """Вспомогательная функция — находит номер строки клиента в таблице (или None)."""
+    """Вспомогательная функция - находит номер строки клиента в таблице (или None)."""
     rows = sheet.get_all_records()
     for idx, r in enumerate(rows, start=2):
         if int(r["user_id"]) == user_id:
