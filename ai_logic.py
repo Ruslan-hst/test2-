@@ -8,7 +8,7 @@ from openai import OpenAI
 from sheets import get_stock
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-AI_MODEL = "anthropic/claude-sonnet-4.6"
+AI_MODEL = "google/gemini-3.1-flash-lite"
 
 ai_client = OpenAI(
     base_url="https://polza.ai/api/v1",
