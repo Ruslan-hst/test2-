@@ -269,9 +269,39 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_text = update.message.text
 
     if reply_text and reply_text.strip() == "/включить":
+        # Снимаем оба вида паузы
         escalated[user_id] = False
+        if user_id in pause_state:
+            pending = pause_state[user_id].get("pending_client_messages", [])
+            pause_state[user_id]["paused"] = False
+            pause_state[user_id]["pending_client_messages"] = []
+        else:
+            pending = []
+
         await set_topic_status(context.bot, user_id, "normal")
         await update.message.reply_text("✅ AI снова включён для этого клиента")
+
+        # Если есть накопленные сообщения клиента — AI сразу отвечает на них
+        if pending:
+            try:
+                combined_text = "\n".join(pending)
+                content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
+                answer, call_manager, escalate, classification = ask_ai_sync(user_id, content)
+                await context.bot.send_message(chat_id=user_id, text=answer)
+                sync_to_bitrix(user_id, "AI", answer)
+                thread_id = client_topics.get(user_id)
+                if thread_id:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        message_thread_id=thread_id,
+                        text=f"🤖 AI (вернулся после /включить): {answer}"
+                    )
+                if classification:
+                    deal_id = client_deals.get(user_id)
+                    if deal_id:
+                        bitrix.update_deal_classification(deal_id, classification)
+            except Exception as e:
+                logging.error(f"Ошибка при ответе после /включить: {e}")
         return
 
     try:
