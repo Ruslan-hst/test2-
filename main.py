@@ -1,6 +1,6 @@
 """
-main.py — запуск Telegram-бота и обработчики сообщений.
-Вся логика AI вынесена в ai_logic.py, работа с Google Sheets — в sheets.py, Битрикс — в bitrix.py.
+main.py - запуск Telegram-бота и обработчики сообщений.
+Вся логика AI вынесена в ai_logic.py, работа с Google Sheets - в sheets.py, Битрикс - в bitrix.py.
 """
 
 import os
@@ -180,7 +180,7 @@ async def activate_escalation(context_bot, user_id, user_name, username, raw_tex
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я AI помощник магазина «Хоккейные клюшки ТОП».\n\n"
+        "👋 Привет! Я AI помощник магазина «Клюшки В.НАЛИЧИИ».\n\n"
         "Задай любой вопрос или пришли фото клюшки — помогу подобрать! 🏒📸"
     )
 
@@ -269,7 +269,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_text = update.message.text
 
     if reply_text and reply_text.strip() == "/включить":
-        # Снимаем оба вида паузы
         escalated[user_id] = False
         if user_id in pause_state:
             pending = pause_state[user_id].get("pending_client_messages", [])
@@ -281,7 +280,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await set_topic_status(context.bot, user_id, "normal")
         await update.message.reply_text("✅ AI снова включён для этого клиента")
 
-        # Если есть накопленные сообщения клиента — AI сразу отвечает на них
         if pending:
             try:
                 combined_text = "\n".join(pending)
@@ -489,11 +487,6 @@ def index():
 
 @flask_app.route("/send-touch", methods=["POST"])
 def send_touch():
-    """
-    Эндпоинт для n8n - принимает готовый текст касания/рассылки и отправляет клиенту,
-    дублируя в группу и Битрикс через уже существующую логику бота.
-    Ожидает JSON: {"secret": "...", "user_id": 123, "text": "...", "next_touch_number": 1}
-    """
     from flask import request, jsonify
     data = request.get_json(force=True, silent=True) or {}
 
@@ -501,11 +494,11 @@ def send_touch():
         return jsonify({"error": "unauthorized"}), 403
 
     user_id = data.get("user_id")
-    text = data.get("text")
+    idea = data.get("idea")
     next_touch_number = data.get("next_touch_number")
 
-    if not user_id or not text:
-        return jsonify({"error": "user_id and text are required"}), 400
+    if not user_id or not idea:
+        return jsonify({"error": "user_id and idea are required"}), 400
 
     app = telegram_app_ref["app"]
     if not app:
@@ -514,8 +507,25 @@ def send_touch():
     async def _send():
         try:
             user_id_int = int(user_id)
-            await app.bot.send_message(chat_id=user_id_int, text=text)
 
+            from ai_logic import ai_client, AI_MODEL
+            touch_prompt = (
+                "Ты - AI продавец магазина Клюшки В.НАЛИЧИИ. "
+                "Напиши короткое дружелюбное напоминание клиенту в Telegram. "
+                "Максимум 2-3 коротких предложения, без воды. "
+                "Без markdown разметки, 1-2 простых эмодзи. "
+                "Пиши только текст сообщения без вступлений и пояснений. "
+                f"Идея касания: {idea}"
+            )
+
+            response = ai_client.chat.completions.create(
+                model=AI_MODEL,
+                max_tokens=100,
+                messages=[{"role": "user", "content": touch_prompt}]
+            )
+            text = response.choices[0].message.content.strip()
+
+            await app.bot.send_message(chat_id=user_id_int, text=text)
             sync_to_bitrix(user_id_int, "AI (касание)", text)
 
             thread_id = client_topics.get(user_id_int)
