@@ -194,6 +194,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
     raw_text = update.message.text
+    # Ставим реакцию на сообщение клиента
+    try:
+        from telegram import ReactionTypeEmoji
+        text_lower = raw_text.lower()
+        if any(w in text_lower for w in ["привет", "здравствуй", "добрый", "хай", "hi", "hello", "салам"]):
+            reaction = "👋"
+        elif any(w in text_lower for w in ["спасибо", "благодарю", "thanks", "thank", "отлично", "супер", "круто", "класс"]):
+            reaction = "❤"
+        elif any(w in text_lower for w in ["клюшк", "bauer", "ccm", "бауер", "ссм", "флекс", "загиб", "p28", "p92", "р28", "р92"]):
+            reaction = "🏒"
+        else:
+            reaction = None
+
+        if reaction:
+            await update.message.set_reaction([ReactionTypeEmoji(emoji=reaction)])
+    except Exception as e:
+        logging.error(f"Ошибка постановки реакции: {e}")
 
     text = f"[Telegram username отправителя: @{username}]\n{raw_text}"
 
