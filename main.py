@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
 import bitrix
 
@@ -236,7 +236,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await update.message.chat.send_action("typing")
-        answer, call_manager, escalate, classification = ask_ai_sync(user_id, text)
+        answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, text)
 
         if escalate:
             await update.message.reply_text(answer)
@@ -253,6 +253,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deal_id = client_deals.get(user_id)
             if deal_id:
                 bitrix.update_deal_classification(deal_id, classification)
+
+        if client_name:                                       
+            update_client_name(user_id, client_name)
 
         uds_keywords = ["uds", "удс", "карта", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
         if any(w in answer.lower() for w in uds_keywords):
@@ -301,7 +304,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
-                answer, call_manager, escalate, classification = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
                 await context.bot.send_message(chat_id=user_id, text=answer)
                 sync_to_bitrix(user_id, "AI", answer)
                 thread_id = client_topics.get(user_id)
@@ -456,7 +459,7 @@ async def pause_checker_loop(application):
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
 
-                answer, call_manager, escalate, classification = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
 
                 await application.bot.send_message(chat_id=user_id, text=answer)
                 sync_to_bitrix(user_id, "AI", answer)
@@ -465,6 +468,9 @@ async def pause_checker_loop(application):
                     deal_id = client_deals.get(user_id)
                     if deal_id:
                         bitrix.update_deal_classification(deal_id, classification)
+
+                if client_name:                              
+                    update_client_name(user_id, client_name)
 
                 thread_id = client_topics.get(user_id)
                 if thread_id:
