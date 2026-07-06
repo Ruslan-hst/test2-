@@ -28,7 +28,7 @@ def build_system_prompt():
 
     stock_text = "АКТУАЛЬНЫЕ ОСТАТКИ НА СКЛАДЕ:\n"
     for r in rows:
-        total = int(r.get("ОБЩИЙ", 0))
+        total = int(r.get("ОБЩИЙ", 0) or 0)
         if total <= 0:
             continue
         brand = r.get("Бренд", "")
@@ -39,9 +39,9 @@ def build_system_prompt():
         color = r.get("Цвет", "")
         price = r.get("Цена", "9900")
 
-        msk2 = int(r.get("МСК2 (Игорь)", 0))
-        mo = int(r.get("МО (Максим)", 0))
-        kazan = int(r.get("Казань", 0))
+        msk2 = int(r.get("МСК2 (Игорь)", 0) or 0)
+        mo = int(r.get("МО (Максим)", 0) or 0)
+        kazan = int(r.get("Казань", 0) or 0)
 
         if kazan > 0 and (msk2 > 0 or mo > 0):
             ship_from = "Казань (самовывоз/доставка) или доставка по России"
