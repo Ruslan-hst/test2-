@@ -198,12 +198,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from telegram import ReactionTypeEmoji
         text_lower = raw_text.lower()
-        if any(w in text_lower for w in ["привет", "здравствуй", "добрый", "хай", "hi", "hello", "салам"]):
-            reaction = "👋"
+       if any(w in text_lower for w in ["привет", "здравствуй", "добрый", "хай", "hi", "hello", "салам"]):
+            reaction = "🔥"
         elif any(w in text_lower for w in ["спасибо", "благодарю", "thanks", "thank", "отлично", "супер", "круто", "класс"]):
             reaction = "❤"
         elif any(w in text_lower for w in ["клюшк", "bauer", "ccm", "бауер", "ссм", "флекс", "загиб", "p28", "p92", "р28", "р92"]):
-            reaction = "🏒"
+            reaction = "🏆"
         else:
             reaction = None
 
