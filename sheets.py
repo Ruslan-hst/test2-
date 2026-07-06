@@ -151,3 +151,14 @@ def update_touch_number(user_id, touch_number):
             sheet.update_cell(idx, 9, str(touch_number))
     except Exception as e:
         logging.error(f"Ошибка обновления touch_number: {e}")
+
+
+def update_client_name(user_id, name):
+    """Сохраняет имя клиента в колонку K (client_name)."""
+    try:
+        sheet = get_chats_sheet()
+        idx = _find_row_index(sheet, user_id)
+        if idx:
+            sheet.update_cell(idx, 11, name)  # K = client_name
+    except Exception as e:
+        logging.error(f"Ошибка сохранения имени клиента: {e}")
