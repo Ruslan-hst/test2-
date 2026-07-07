@@ -40,8 +40,8 @@ UDS_BUTTONS = InlineKeyboardMarkup([
 
 MAP_BUTTONS = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("2ГИС", url="https://go.2gis.com/DT48h"),
-        InlineKeyboardButton("Яндекс Карты", url="https://yandex.ru/maps/-/CTeGb8M1")
+        InlineKeyboardButton("2ГИС", url="https://go.2gis.com/246XQ"),
+        InlineKeyboardButton("Яндекс Карты", url="https://yandex.ru/maps/-/CTqL46ZM")
     ]
 ])
 
