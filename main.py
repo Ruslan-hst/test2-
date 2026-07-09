@@ -187,7 +187,7 @@ async def activate_escalation(context_bot, user_id, user_name, username, raw_tex
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я AI помощник магазина Клюшки В.НАЛИЧИИ.\n\n"
+        "👋 Привет! Я AI помощник магазина «Клюшки В.НАЛИЧИИ».\n\n"
         "Задай любой вопрос или пришли фото клюшки — помогу подобрать! 🏒📸"
     )
 
@@ -201,7 +201,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
     raw_text = update.message.text
-
     # Ставим реакцию на сообщение клиента
     try:
         from telegram import ReactionTypeEmoji
@@ -262,12 +261,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if deal_id:
                 bitrix.update_deal_classification(deal_id, classification)
 
-        if client_name:
+        if client_name:                                       
             update_client_name(user_id, client_name)
 
-        # Определяем нужные кнопки
         map_keywords = ["адрес", "карт", "2гис", "яндекс", "как найти", "где находится", "самовывоз", "приехать"]
-        uds_keywords = ["uds", "удс", "карта", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
+        uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
 
         if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
             await update.message.reply_text(answer, reply_markup=MAP_BUTTONS)
@@ -331,8 +329,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     deal_id = client_deals.get(user_id)
                     if deal_id:
                         bitrix.update_deal_classification(deal_id, classification)
-                if client_name:
-                    update_client_name(user_id, client_name)
             except Exception as e:
                 logging.error(f"Ошибка при ответе после /включить: {e}")
         return
@@ -484,7 +480,7 @@ async def pause_checker_loop(application):
                     if deal_id:
                         bitrix.update_deal_classification(deal_id, classification)
 
-                if client_name:
+                if client_name:                              
                     update_client_name(user_id, client_name)
 
                 thread_id = client_topics.get(user_id)
@@ -549,7 +545,8 @@ def send_touch():
             from ai_logic import ai_client, AI_MODEL
             touch_prompt = (
                 "Ты - AI продавец магазина Клюшки В.НАЛИЧИИ. "
-                "Мы продаём новые клюшки и восстановленные клюшки. "
+                "Мы продаём ТОЛЬКО новые клюшки и новую хоккейную экипировку, никаких б/у. "
+                "Не упоминай б/у товары никогда. "
                 "Напиши короткое дружелюбное напоминание клиенту в Telegram. "
                 "Максимум 2-3 коротких предложения, без воды. "
                 "Без markdown разметки, 1-2 простых эмодзи. "
@@ -613,4 +610,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main
+    main()
