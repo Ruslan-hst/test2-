@@ -1,276 +1,666 @@
 """
-ai_logic.py - системный промт и вызов Gemini через polza.ai
+main.py - запуск Telegram-бота и обработчики сообщений.
+Вся логика AI вынесена в ai_logic.py, работа с Google Sheets - в sheets.py, Битрикс - в bitrix.py.
 """
 
 import os
+import base64
+import asyncio
 import logging
-from openai import OpenAI
-from sheets import get_stock
+import threading
+import time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-AI_MODEL = "google/gemini-3.1-flash-lite"
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name
+from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
+import bitrix
 
-ai_client = OpenAI(
-    base_url="https://polza.ai/api/v1",
-    api_key=ANTHROPIC_API_KEY
-)
+logging.basicConfig(level=logging.INFO)
 
-CALL_MANAGER_MARKER = "[CALL_MANAGER]"
-ESCALATE_MARKER = "[ESCALATE]"
-CLASSIFY_PREFIX = "[CLASSIFY:"
-VALID_SEGMENTS = ["SR", "INT", "JR", "ДЕШЕВЫЕ", "ОРИГИНАЛЫ", "ВРАТАРСКИЕ"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_GROUP_ID = int(os.environ.get("ADMIN_GROUP_ID", "-1004320992345"))
+ADMIN_PERSONAL_ID = int(os.environ.get("ADMIN_PERSONAL_ID", "469947146"))
 
-dialogs = {}
+PAUSE_MINUTES = 10
+CHECK_INTERVAL_SECONDS = 120
 
+client_topics, topic_to_client, topic_names, client_deals = load_topic_mapping()
 
-def build_system_prompt():
-    rows = get_stock()
+pause_state = {}
+escalated = {}
 
-    stock_text = "АКТУАЛЬНЫЕ ОСТАТКИ НА СКЛАДЕ:\n"
-    for r in rows:
-        total = int(r.get("ОБЩИЙ", 0) or 0)
-        if total <= 0:
-            continue
-        brand = r.get("Бренд", "")
-        model = r.get("Модель", "")
-        hand = r.get("Хват", "")
-        bend = r.get("Загиб", "")
-        flex = r.get("Флекс", "")
-        color = r.get("Цвет", "")
-        price = r.get("Цена", "9900")
-
-        msk2 = int(r.get("МСК2 (Игорь)", 0) or 0)
-        mo = int(r.get("МО (Максим)", 0) or 0)
-        kazan = int(r.get("Казань", 0) or 0)
-
-        if kazan > 0 and (msk2 > 0 or mo > 0):
-            ship_from = "Казань (самовывоз/доставка) или доставка по России"
-        elif kazan > 0:
-            ship_from = "Казань (самовывоз или доставка)"
-        elif msk2 > 0 and mo > 0:
-            ship_from = "Москва или Раменское"
-        elif msk2 > 0:
-            ship_from = "Москва"
-        else:
-            ship_from = "Раменское"
-
-        hand_display = "Левый" if hand == "L" else "Правый"
-        color_note = f" | Цвет: {color}" if color and color not in ("standard", "уточнить", "уточнить у Игоря") else ""
-
-        stock_text += (
-            f"• {brand} {model} | {bend} | {hand_display} | Флекс: {flex}"
-            f"{color_note} | {total} шт | {price}руб | Отправка из: {ship_from}\n"
-        )
-
-    prompt = (
-        "Ты - AI продавец магазина Клюшки В.НАЛИЧИИ.\n\n"
-        "ВАЖНО: Всегда отвечай только на русском языке.\n\n"
-        "ТВОЯ ЗАДАЧА: помочь клиенту выбрать хоккейную клюшку и оформить заказ. "
-        "Ты знаешь всё о характеристиках клюшек и уверенно консультируешь клиентов. "
-        "Если ты не знаешь ответа - честно скажи об этом, но не проси клиента тебя учить.\n\n"
-        + stock_text +
-        "\nИНФОРМАЦИЯ О МАГАЗИНЕ:\n"
-        "- Офлайн магазин: г. Казань, пер. Односторонки Гривки 10\n"
-        "- Доставка по всей России через СДЭК. Другие ТК только если в населённом пункте клиента нет СДЭК.\n"
-        "- Если клиент боится обмана или спрашивает про гарантии - предложи наложенный платёж через СДЭК (оплата при получении).\n"
-        "- Про город отправки и детали доставки - говори ТОЛЬКО если клиент сам спрашивает или при оформлении заказа.\n"
-        "- Если клиент спрашивает адрес или как найти магазин - скажи адрес и предложи кнопки с картами.\n\n"
-        "ПРОГРАММА ЛОЯЛЬНОСТИ UDS:\n"
-        "- 1000 приветственных баллов при регистрации\n"
-        "- Кэшбэк до 7% с каждой покупки\n"
-        "- 1 балл = 1 рубль, списывать можно до 15% от покупки\n"
-        "- Оформить: t.me/UDS_hockey_sticks_top_bot\n"
-        "- Про UDS говори ТОЛЬКО когда клиент спрашивает про цену или скидку.\n\n"
-        "ОФОРМЛЕНИЕ ЗАКАЗА:\n"
-        "Когда клиент готов купить (сказал 'беру', 'оформляем', 'как оплатить', 'куда переводить' и т.п.) — отправь ему это сообщение:\n"
-        "Отлично! Можете присылать данные и оплачивать, после отправки трек пришлю.\n\n"
-        "1. От вас данные для отправки: ФИО, адрес и номер телефона.\n\n"
-        "2. Оплата:\n"
-        "+79874174714\n"
-        "Получатель Руслан Ильдарович Н.\n\n"
-        "Банки: Райффайзенбанк, Солидарность, Т-Банк, Альфа\n\n"
-        "Если клиент боится обмана или спрашивает про гарантии - предложи наложенный платёж через СДЭК (оплата при получении).\n\n"
-        "ЗНАНИЯ О ХАРАКТЕРИСТИКАХ КЛЮШЕК:\n\n"
-        "ХВАТ:\n"
-        "- Левый хват (L) - нижняя рука левая. Большинство правшей по жизни играют левым хватом.\n"
-        "- Правый хват (R) - нижняя рука правая. Большинство левшей по жизни играют правым хватом.\n"
-        "- Левый хват встречается чаще - примерно 79% игроков.\n\n"
-        "БРЕНДЫ (клиенты пишут по-разному, понимай все варианты):\n"
-        "- Bauer = бауер = бауэр = баур\n"
-        "- CCM = ссм = цсм\n"
-        "Если клиент написал название бренда с ошибкой - правильно его распознай.\n\n"
-        "ЗАГИБЫ (клиенты пишут по-разному, понимай все варианты):\n"
-        "- P28 = р28 = п28 = 28 - банан. Глубокий загиб носка. Резкий точный кистевой бросок. Чуть сложнее при приёме.\n"
-        "- P92 (Bauer) = р92 = п92 = 92 - стандартный универсальный загиб Bauer.\n"
-        "- P29 (CCM) = р29 = п29 = 29 - стандартный универсальный загиб CCM. Очень похож на P92 Bauer, большинству людей разница незаметна. Кому принципиально - уважай выбор.\n"
-        "- P19 - устаревший загиб CCM, сейчас заменён на P29.\n"
-        "- P88 = р88 = п88 = 88\n"
-        "- P90TM = р90 = п90 = 90\n"
-        "Если клиент написал например 'р92 70' или '92/70' или 'п29 65 флекс' - правильно пойми это как загиб и флекс отдельно.\n"
-        "Если нужного загиба нет - предложи аналог у другого бренда (P92 у Bauer примерно равен P29 у CCM).\n"
-        "Описание загибов:\n"
-        "- P92/P29 - универсальный стандартный загиб. Подходит новичкам, защитникам, универсалам.\n"
-        "- P28 - для опытных нападающих с акцентом на кистевой бросок.\n\n"
-        "ФЛЕКСЫ ПО БРЕНДАМ (важно - не путать):\n"
-        "- Bauer: 20, 30, 40, 50, 55, 65, 70, 77, 87, 95, 102\n"
-        "- CCM: 20, 30, 40, 50, 55, 65, 70, 75, 85, 95, 105\n"
-        "У Bauer НЕТ флекса 75 и 85 - есть 77 и 87. Не путай.\n\n"
-        "ФЛЕКС/ЖЁСТКОСТЬ:\n"
-        "Формула расчёта: вес (кг) х 2.2 / 2, округлить до ближайшего стандартного значения по бренду.\n"
-        "Пример: игрок весит 90 кг -> 90 х 2.2 / 2 = 99 -> для Bauer ближайший 95 или 102, для CCM ближайший 95 или 105.\n"
-        "Если нужного флекса нет - предлагай соседний стандартный из списка по бренду.\n\n"
-        "Серии по флексу и высоте клюшки:\n"
-        "- YTH: флекс 20, высота Bauer 130 см / CCM 135 см\n"
-        "- JR: флекс 30-40, высота 140-145 см\n"
-        "- JR: флекс 50, высота 150 см\n"
-        "- INT: флекс 55-65, высота Bauer 160 см / CCM 162 см\n"
-        "- SR: флекс 70-87(Bauer)/85(CCM), высота Bauer 170.5 см / CCM 169.5 см\n"
-        "- SR LONG: флекс 95-105, высота 174 см\n\n"
-        "ВЫСОТА КЛЮШКИ (только если клиент сам спрашивает):\n"
-        "Полная высота - от пола до верха рукоятки. Коэффициенты примерные.\n"
-        "- Нападающий: рост х 0.885 (примерно по губы без коньков)\n"
-        "- Защитник: рост х 0.915 (примерно по брови без коньков)\n"
-        "- Универсал/не знает: рост х 0.90 (примерно по нос без коньков)\n"
-        "Показывай диапазон +-1 см с ориентиром.\n"
-        "Пример: игрок 185 см, нападающий -> 185 х 0.885 = 163.7 -> ответ: 163-165 см, примерно по губы, без коньков.\n\n"
-        "ЗОНЫ ПРОГИБА (не зависят от флекса - это отдельная характеристика модели):\n"
-        "- Ультранижняя/Сверхнижняя/Нижняя -> быстрые кистевые броски, чаще выбирают нападающие\n"
-        "- Средняя -> мощные щелчки, чаще выбирают защитники\n"
-        "- Гибридная -> универсальная, подходит для обоих типов бросков\n"
-        "Это общее правило - любой игрок может играть любой клюшкой, как ему удобно.\n\n"
-        "НАШИ МОДЕЛИ - ЗОНЫ ПРОГИБА И ЗАГИБЫ:\n"
-        "(позиция указана как рекомендация, не как ограничение)\n"
-        "- CCM Vision - ультранижняя зона, загибы P29/P28\n"
-        "- CCM XF Ghost - средняя зона, загибы P29/P28\n"
-        "- CCM Trigger 10 PRO - нижняя зона, загибы P29/P28\n"
-        "- CCM FT9 PRO - гибридная зона, загибы P29/P28\n"
-        "- CCM Trigger Unleashed - нижняя зона, загибы P29/P28\n"
-        "- Bauer Tracer - средняя зона, загибы P92/P28\n"
-        "- Bauer Twitch - сверхнижняя зона, загибы P92/P28\n"
-        "- Bauer Pulse/Pulse Graffiti - гибридная зона, загибы P92/P28\n"
-        "- Bauer Flylite - нижняя зона, загибы P92/P28\n"
-        "- Bauer Proto 2 - средняя зона, загибы P92/P28\n\n"
-        "КАК ПИСАТЬ ХАРАКТЕРИСТИКИ КЛЮШКИ:\n"
-        "Пиши кратко и читабельно: загиб/флекс, хват.\n"
-        "Примеры правильно:\n"
-        "- P92/77, левый хват\n"
-        "- P29/85, правый хват\n"
-        "- P28/70, левый хват\n"
-        "НЕ пиши: 'P92 Л флекс 85' или 'загиб P92, хват левый, флекс 85'\n\n"
-        "ЕСЛИ КЛИЕНТ ПРИСЫЛАЕТ ФОТО КЛЮШКИ:\n"
-        "- Внимательно посмотри на надписи и логотип бренда на самой клюшке (CCM, Bauer и т.д.)\n"
-        "- Не угадывай модель по предыдущему разговору - анализируй именно то что видно на текущем фото\n"
-        "- Если на фото видна другая модель, отличная от того что обсуждали ранее - скажи об этом прямо\n"
-        "- Сравни увиденное с нашим складом и скажи есть ли похожая модель\n"
-        "- Если не уверен - честно скажи что не можешь точно определить модель\n\n"
-        "КЛАССИФИКАЦИЯ ПОТРЕБНОСТИ (важно - записывается в CRM):\n"
-        "Как только понимаешь что именно ищет клиент - определи сегмент и добавь в конец ответа маркер "
-        + CLASSIFY_PREFIX + "СЕГМЕНТ] (например " + CLASSIFY_PREFIX + "SR]). Этот маркер не виден клиенту.\n"
-        "Возможные сегменты:\n"
-        "- SR - флекс 70 и выше\n"
-        "- INT - флекс 55-65\n"
-        "- JR - флекс 20-50\n"
-        "- ДЕШЕВЫЕ - клиент ищет самый бюджетный вариант до 6 тыс руб\n"
-        "- ОРИГИНАЛЫ - хочет только оригинал, не реплику\n"
-        "- ВРАТАРСКИЕ - спрашивает про вратарскую клюшку или форму\n"
-        "Приоритет: ОРИГИНАЛЫ и ВРАТАРСКИЕ и ДЕШЕВЫЕ перекрывают определение по флексу.\n"
-        "Ставь маркер ОДИН РАЗ, как только определился.\n\n"
-        "ЗАПОМИНАНИЕ ИМЕНИ КЛИЕНТА:\n"
-        "Если клиент назвал своё имя - запомни его и обращайся к нему по имени в следующих сообщениях.\n"
-        "Как только клиент назвал имя - добавь в конец ответа маркер [NAME:имя] (например [NAME:Иван]). Этот маркер не виден клиенту.\n"
-        "Ставь маркер [NAME:] ОДИН РАЗ - только когда клиент первый раз назвал имя.\n\n"
-        "КОГДА ЗВАТЬ МЕНЕДЖЕРА - ОБЫЧНАЯ ПРОСЬБА:\n"
-        "- Если клиент ЯВНО просит позвать менеджера - в КОНЦЕ ответа добавь маркер " + CALL_MANAGER_MARKER + "\n"
-        "- Если клиент просто спрашивает могу ли я помочь - это вопрос, отвечай сам, маркер не добавляй\n\n"
-        "КОГДА ЭСКАЛИРОВАТЬ - СЕРЬЁЗНЫЕ СЛУЧАИ:\n"
-        "Если обнаружил один из этих признаков - в КОНЦЕ ответа добавь маркер " + ESCALATE_MARKER + ":\n"
-        "- Клиент жалуется по поводу ПРЕДЫДУЩЕГО заказа\n"
-        "- Вопрос по гарантии (нестандартный случай)\n"
-        "- Оптовый запрос - 5 или больше клюшек сразу, школа/тренер\n"
-        "- Клиент явно недоволен тоном или ответами AI\n"
-        "- Ты НЕ уверен как правильно ответить - никогда не угадывай, лучше эскалировать\n\n"
-        "ПРАВИЛА ОБЩЕНИЯ:\n"
-        "1. Отвечай живо и дружелюбно, используй эмодзи для акцентов\n"
-        "2. Структурируй ответ - разбивай на абзацы с отступами, не пиши всё в одну строку\n"
-        "3. Если перечисляешь несколько вещей - нумеруй или разбивай на строки\n"
-        "4. СТРОГО ЗАПРЕЩЕНО использовать звёздочки (**текст**), решётки (#) и любую markdown-разметку. Пиши ТОЛЬКО обычным текстом без какого-либо форматирования символами.\n"
-        "5. Если клиент готов купить - попроси имя и телефон\n"
-        "6. Не называй названия поставщиков и закупочные цены\n"
-        "7. Отвечай только на темы хоккея и клюшек\n"
-        "8. Всегда заканчивай ответ вопросом чтобы вовлекать клиента в диалог\n"
-        "9. НЕ перечисляй цвета моделей если клиент сам не спросил про цвета конкретной модели\n"
-        "10. НИКОГДА не упоминай цену первым - называй только когда клиент сам спросит или при оформлении заказа\n"
-        "11. Про UDS и скидки - говори ТОЛЬКО если клиент спрашивает про цену или скидку\n"
-        "12. Про город отправки - говори ТОЛЬКО если клиент сам спрашивает или при оформлении заказа\n"
-        "13. Не выдавай весь список склада когда клиент спрашивает что есть в наличии - сначала узнай параметры (кому, рост, вес, хват) и предложи конкретные варианты\n"
-    )
-    return prompt
-
-
-def ask_ai_sync(user_id, content):
-    """Синхронный вызов AI. Возвращает (answer_text, call_manager: bool, escalate: bool, classification: str|None, client_name: str|None)."""
-    if user_id not in dialogs:
-        dialogs[user_id] = []
-
-    dialogs[user_id].append({"role": "user", "content": content})
-
-    response = ai_client.chat.completions.create(
-        model=AI_MODEL,
-        messages=[
-            {"role": "system", "content": build_system_prompt()}
-        ] + dialogs[user_id][-30:]
-    )
-
-    raw_answer = response.choices[0].message.content
-
-    call_manager = CALL_MANAGER_MARKER in raw_answer
-    escalate = ESCALATE_MARKER in raw_answer
-
-    classification = None
-    if CLASSIFY_PREFIX in raw_answer:
-        try:
-            start = raw_answer.index(CLASSIFY_PREFIX) + len(CLASSIFY_PREFIX)
-            end = raw_answer.index("]", start)
-            candidate = raw_answer[start:end].strip().upper()
-            if candidate in VALID_SEGMENTS:
-                classification = candidate
-        except (ValueError, IndexError):
-            pass
-
-    client_name = None
-    if "[NAME:" in raw_answer:
-        try:
-            start = raw_answer.index("[NAME:") + 6
-            end = raw_answer.index("]", start)
-            client_name = raw_answer[start:end].strip()
-        except (ValueError, IndexError):
-            pass
-
-    clean_answer = raw_answer.replace(CALL_MANAGER_MARKER, "").replace(ESCALATE_MARKER, "")
-    if classification:
-        clean_answer = clean_answer.replace(f"{CLASSIFY_PREFIX}{classification}]", "")
-    if client_name:
-        clean_answer = clean_answer.replace(f"[NAME:{client_name}]", "")
-    clean_answer = clean_answer.strip()
-
-    dialogs[user_id].append({"role": "assistant", "content": clean_answer})
-
-    return clean_answer, call_manager, escalate, classification, client_name
-
-
-def ask_ai_with_image(image_content_block, caption_text):
-    """Вызов AI с изображением - отдельный запрос без истории диалога."""
-    content = [
-        {"type": "text", "text": caption_text},
-        image_content_block
+UDS_BUTTONS = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("📱 ТГ", url="https://t.me/UDS_hockey_sticks_top_bot"),
+        InlineKeyboardButton("📱 MAX", url="https://max.ru/id164908988785_2_bot")
     ]
+])
 
-    response = ai_client.chat.completions.create(
-        model=AI_MODEL,
-        messages=[
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": content}
-        ]
+MAP_BUTTONS = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("2ГИС", url="https://go.2gis.com/246XQ"),
+        InlineKeyboardButton("Яндекс Карты", url="https://yandex.ru/maps/-/CTqL46ZM")
+    ]
+])
+
+
+def get_topic_link(thread_id):
+    group_id_for_link = str(ADMIN_GROUP_ID).replace("-100", "")
+    return f"https://t.me/c/{group_id_for_link}/{thread_id}"
+
+
+async def set_topic_status(bot, user_id, status: str):
+    thread_id = client_topics.get(user_id)
+    if not thread_id:
+        return
+
+    base_name = topic_names.get(user_id, "Клиент")
+
+    if status == "paused":
+        new_name = f"🔇 {base_name}"
+    elif status == "escalated":
+        new_name = f"⚠️ {base_name}"
+    else:
+        new_name = base_name
+
+    new_name = new_name[:128]
+
+    try:
+        await bot.edit_forum_topic(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=thread_id,
+            name=new_name
+        )
+    except Exception as e:
+        logging.error(f"Ошибка переименования темы: {e}")
+
+
+def sync_to_bitrix(user_id, author_label, text):
+    deal_id = client_deals.get(user_id)
+    if deal_id:
+        bitrix.add_comment(deal_id, author_label, text)
+
+
+async def get_or_create_topic(context, user_id, user_name, username):
+    if user_id in client_topics:
+        return client_topics[user_id]
+
+    topic_name = f"{user_name} (@{username})" if username != "без username" else user_name
+    topic_name = topic_name[:128]
+
+    topic = await context.bot.create_forum_topic(
+        chat_id=ADMIN_GROUP_ID,
+        name=topic_name
     )
 
-    return response.choices[0].message.content
+    thread_id = topic.message_thread_id
+    client_topics[user_id] = thread_id
+    topic_to_client[thread_id] = user_id
+    topic_names[user_id] = topic_name
+
+    deal_id = bitrix.create_deal(user_name, username)
+    if deal_id:
+        client_deals[user_id] = deal_id
+
+    save_topic_mapping(user_id, thread_id, user_name, username, deal_id=deal_id or "")
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_PERSONAL_ID,
+            text=f"🆕 Новый клиент в боте!\n\n👤 Имя: {user_name}\n📱 Username: @{username}\n\n💬 Тема создана в группе"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка уведомления о новом чате: {e}")
+
+    return thread_id
+
+
+def is_ai_paused(user_id):
+    state = pause_state.get(user_id)
+    return state is not None and state.get("paused", False)
+
+
+def is_escalated(user_id):
+    return escalated.get(user_id, False)
+
+
+async def activate_manager_pause(context_bot, user_id, user_name, username, raw_text):
+    pause_state[user_id] = {
+        "paused": True,
+        "last_manager_message_time": time.time(),
+        "pending_client_messages": []
+    }
+    await set_topic_status(context_bot, user_id, "paused")
+
+    try:
+        thread_id = client_topics.get(user_id)
+        topic_link = get_topic_link(thread_id) if thread_id else ""
+
+        deal_id = client_deals.get(user_id)
+        deal_link = bitrix.get_deal_link(deal_id) if deal_id else ""
+
+        message_text = f"🔔 Клиент {user_name} (@{username}) просит менеджера!\n\nСообщение: {raw_text}\n\n👉 Перейти в чат: {topic_link}"
+        if deal_link:
+            message_text += f"\n📋 Сделка в Битрикс: {deal_link}"
+
+        await context_bot.send_message(
+            chat_id=ADMIN_PERSONAL_ID,
+            text=message_text
+        )
+    except Exception as e:
+        logging.error(f"Ошибка уведомления про менеджера: {e}")
+
+
+async def activate_escalation(context_bot, user_id, user_name, username, raw_text):
+    escalated[user_id] = True
+    if user_id in pause_state:
+        pause_state[user_id]["paused"] = False
+
+    await set_topic_status(context_bot, user_id, "escalated")
+
+    try:
+        thread_id = client_topics.get(user_id)
+        topic_link = get_topic_link(thread_id) if thread_id else ""
+
+        deal_id = client_deals.get(user_id)
+        deal_link = bitrix.get_deal_link(deal_id) if deal_id else ""
+
+        message_text = (
+            f"⚠️ ТРЕБУЕТСЯ ВНИМАНИЕ! Сложный случай у клиента {user_name} (@{username})\n\n"
+            f"Сообщение: {raw_text}\n\n"
+            f"AI приостановлен полностью для этого клиента.\n"
+            f"Когда разберёшься — напиши /включить в этой теме.\n\n"
+            f"👉 Перейти в чат: {topic_link}"
+        )
+        if deal_link:
+            message_text += f"\n📋 Сделка в Битрикс: {deal_link}"
+
+        await context_bot.send_message(
+            chat_id=ADMIN_PERSONAL_ID,
+            text=message_text
+        )
+    except Exception as e:
+        logging.error(f"Ошибка уведомления про эскалацию: {e}")
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Привет! Я AI помощник магазина «Клюшки В.НАЛИЧИИ».\n\n"
+        "Задай любой вопрос или пришли фото клюшки — помогу подобрать! 🏒📸"
+    )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id == ADMIN_GROUP_ID:
+        await handle_admin_reply(update, context)
+        return
+
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username or "без username"
+    user_name = update.message.from_user.full_name or "Клиент"
+    raw_text = update.message.text
+    # Ставим реакцию на сообщение клиента
+    try:
+        from telegram import ReactionTypeEmoji
+        text_lower = raw_text.lower()
+        if any(w in text_lower for w in ["привет", "здравствуй", "добрый", "хай", "hi", "hello", "салам"]):
+            reaction = "🔥"
+        elif any(w in text_lower for w in ["спасибо", "благодарю", "thanks", "thank", "отлично", "супер", "круто", "класс"]):
+            reaction = "❤"
+        elif any(w in text_lower for w in ["клюшк", "bauer", "ccm", "бауер", "ссм", "флекс", "загиб", "p28", "p92", "р28", "р92"]):
+            reaction = "🏆"
+        else:
+            reaction = None
+
+        if reaction:
+            await update.message.set_reaction([ReactionTypeEmoji(emoji=reaction)])
+    except Exception as e:
+        logging.error(f"Ошибка постановки реакции: {e}")
+
+    text = f"[Telegram username отправителя: @{username}]\n{raw_text}"
+
+    try:
+        thread_id = await get_or_create_topic(context, user_id, user_name, username)
+        await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            message_thread_id=thread_id,
+            text=f"👤 Клиент: {raw_text}"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка дублирования в группу: {e}")
+
+    sync_to_bitrix(user_id, "Клиент", raw_text)
+    update_last_client_message(user_id)
+
+    # Уведомление когда клиент присылает данные для отправки
+    data_keywords = ["фио", "ф.и.о", "улица", "город", "индекс", "область", "адрес доставки", "данные для"]
+    payment_keywords = ["оплатил", "оплатила", "перевел", "перевела", "отправил оплату", "скинул", "оплата отправлена", "деньги перевел", "перевод сделал"]
+    text_lower_notify = raw_text.lower()
+    if any(w in text_lower_notify for w in data_keywords):
+        try:
+            thread_id_notify = client_topics.get(user_id)
+            topic_link_notify = get_topic_link(thread_id_notify) if thread_id_notify else ""
+            await context.bot.send_message(
+                chat_id=ADMIN_PERSONAL_ID,
+                text=f"📦 Клиент прислал данные для отправки\n\n👤 {user_name} (@{username})\n👉 {topic_link_notify}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка уведомления о данных: {e}")
+    elif any(w in text_lower_notify for w in payment_keywords):
+        try:
+            thread_id_notify = client_topics.get(user_id)
+            topic_link_notify = get_topic_link(thread_id_notify) if thread_id_notify else ""
+            await context.bot.send_message(
+                chat_id=ADMIN_PERSONAL_ID,
+                text=f"💰 КЛИЕНТ ОПЛАТИЛ - ПРОВЕРИТЬ ОПЛАТУ\n\n👤 {user_name} (@{username})\n👉 {topic_link_notify}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка уведомления об оплате: {e}")
+
+    if is_escalated(user_id):
+        return
+
+    if is_ai_paused(user_id):
+        pause_state[user_id]["pending_client_messages"].append(raw_text)
+        return
+
+    try:
+        await update.message.chat.send_action("typing")
+        answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, text)
+
+        if escalate:
+            await update.message.reply_text(answer)
+            sync_to_bitrix(user_id, "AI", answer)
+            await activate_escalation(context.bot, user_id, user_name, username, raw_text)
+            return
+
+        if call_manager:
+            await update.message.reply_text("Передаю тебя менеджеру — ответим быстро! 👇")
+            await activate_manager_pause(context.bot, user_id, user_name, username, raw_text)
+            return
+
+        if classification:
+            deal_id = client_deals.get(user_id)
+            if deal_id:
+                bitrix.update_deal_classification(deal_id, classification)
+
+        if client_name:                                       
+            update_client_name(user_id, client_name)
+
+        map_keywords = ["адрес", "карт", "2гис", "яндекс", "как найти", "где находится", "самовывоз", "приехать"]
+        uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
+
+        if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
+            await update.message.reply_text(answer, reply_markup=MAP_BUTTONS)
+        elif any(w in answer.lower() for w in uds_keywords):
+            await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
+        else:
+            await update.message.reply_text(answer)
+
+        sync_to_bitrix(user_id, "AI", answer)
+
+        try:
+            thread_id = client_topics.get(user_id)
+            if thread_id:
+                await context.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    message_thread_id=thread_id,
+                    text=f"🤖 AI: {answer}"
+                )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования ответа AI в группу: {e}")
+
+    except Exception as e:
+        logging.error(f"AI ошибка: {e}")
+
+
+async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id
+    if not thread_id or thread_id not in topic_to_client:
+        return
+
+    user_id = topic_to_client[thread_id]
+    reply_text = update.message.text
+
+    if reply_text and reply_text.strip().startswith("/отправка"):
+        parts = reply_text.strip().split()
+        if len(parts) >= 3:
+            trek = parts[1]
+            summa = parts[2]
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🚛 Ваш заказ отправлен и скоро будет у вас!\n\nТрек-номер: {trek}\nОтследить: https://www.cdek.ru/ru/tracking/\n\nОплата за доставку при получении: {summa} руб.\n❗ Для получения возьмите паспорт.\n\nС уважением, команда Клюшки В.НАЛИЧИИ ❤️"
+                )
+                await update.message.reply_text("✅ Сообщение об отправке отправлено клиенту")
+            except Exception as e:
+                logging.error(f"Ошибка отправки трека: {e}")
+        else:
+            await update.message.reply_text("❌ Формат: /отправка ТРЕК СУММА")
+        return
+
+    if reply_text and reply_text.strip() == "/оплата":
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Оплата получена, спасибо!\nГотовим ваш заказ к отправке. Трек-номер пришлём как только отправим 🏒"
+            )
+            await update.message.reply_text("✅ Подтверждение оплаты отправлено клиенту")
+        except Exception as e:
+            logging.error(f"Ошибка подтверждения оплаты: {e}")
+        return
+
+    if reply_text and reply_text.strip() == "/включить":
+        escalated[user_id] = False
+        if user_id in pause_state:
+            pending = pause_state[user_id].get("pending_client_messages", [])
+            pause_state[user_id]["paused"] = False
+            pause_state[user_id]["pending_client_messages"] = []
+        else:
+            pending = []
+
+        await set_topic_status(context.bot, user_id, "normal")
+        await update.message.reply_text("✅ AI снова включён для этого клиента")
+
+        if pending:
+            try:
+                combined_text = "\n".join(pending)
+                content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
+                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
+                await context.bot.send_message(chat_id=user_id, text=answer)
+                sync_to_bitrix(user_id, "AI", answer)
+                thread_id = client_topics.get(user_id)
+                if thread_id:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        message_thread_id=thread_id,
+                        text=f"🤖 AI (вернулся после /включить): {answer}"
+                    )
+                if classification:
+                    deal_id = client_deals.get(user_id)
+                    if deal_id:
+                        bitrix.update_deal_classification(deal_id, classification)
+            except Exception as e:
+                logging.error(f"Ошибка при ответе после /включить: {e}")
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=reply_text)
+        await update.message.reply_text("✅ Отправлено клиенту")
+
+        sync_to_bitrix(user_id, "Менеджер", reply_text)
+        update_last_manager_message(user_id)
+
+        if not is_escalated(user_id):
+            if user_id not in pause_state:
+                pause_state[user_id] = {"paused": True, "last_manager_message_time": time.time(), "pending_client_messages": []}
+            else:
+                pause_state[user_id]["paused"] = True
+                pause_state[user_id]["last_manager_message_time"] = time.time()
+
+            await set_topic_status(context.bot, user_id, "paused")
+
+    except Exception as e:
+        logging.error(f"Ошибка отправки ответа клиенту: {e}")
+        await update.message.reply_text("❌ Не удалось отправить клиенту")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat_id == ADMIN_GROUP_ID:
+        return
+
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username or "без username"
+    user_name = update.message.from_user.full_name or "Клиент"
+
+    if is_escalated(user_id):
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            photo = update.message.photo[-1]
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id,
+                caption="👤 Клиент отправил фото 📸 (AI на паузе из-за эскалации)"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото при эскалации: {e}")
+        return
+
+    if is_ai_paused(user_id):
+        pause_state[user_id]["pending_client_messages"].append("[Клиент отправил фото]")
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            photo = update.message.photo[-1]
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id,
+                caption="👤 Клиент отправил фото 📸"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото на паузе: {e}")
+        return
+
+    try:
+        await update.message.chat.send_action("typing")
+
+        photo = update.message.photo[-1]
+        photo_file = await photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        photo_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+
+        caption_text = update.message.caption or "Клиент прислал фото клюшки. Внимательно посмотри на бренд и модель на этом конкретном фото, не путай с предыдущими сообщениями."
+        caption = f"[Telegram username отправителя: @{username}]\n{caption_text}"
+
+        image_block = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{photo_b64}"}
+        }
+
+        answer = ask_ai_with_image(image_block, caption)
+
+        if user_id not in dialogs:
+            dialogs[user_id] = []
+        dialogs[user_id].append({"role": "user", "content": "[фото клюшки]"})
+        dialogs[user_id].append({"role": "assistant", "content": answer})
+
+        await update.message.reply_text(answer)
+
+        sync_to_bitrix(user_id, "Клиент", "[отправил фото клюшки]")
+        sync_to_bitrix(user_id, "AI", answer)
+        update_last_client_message(user_id)
+
+        try:
+            thread_id = await get_or_create_topic(context, user_id, user_name, username)
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                text="👤 Клиент отправил фото 📸"
+            )
+            await context.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                photo=photo.file_id
+            )
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                text=f"🤖 AI: {answer}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка дублирования фото в группу: {e}")
+
+    except Exception as e:
+        logging.error(f"Ошибка анализа фото: {e}")
+
+
+async def pause_checker_loop(application):
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+        now = time.time()
+
+        for user_id, state in list(pause_state.items()):
+            if is_escalated(user_id):
+                continue
+
+            if not state.get("paused"):
+                continue
+
+            elapsed = now - state["last_manager_message_time"]
+            if elapsed < PAUSE_MINUTES * 60:
+                continue
+
+            pending = state.get("pending_client_messages", [])
+            if not pending:
+                state["paused"] = False
+                await set_topic_status(application.bot, user_id, "normal")
+                continue
+
+            try:
+                combined_text = "\n".join(pending)
+                content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
+
+                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
+
+                await application.bot.send_message(chat_id=user_id, text=answer)
+                sync_to_bitrix(user_id, "AI", answer)
+
+                if classification:
+                    deal_id = client_deals.get(user_id)
+                    if deal_id:
+                        bitrix.update_deal_classification(deal_id, classification)
+
+                if client_name:                              
+                    update_client_name(user_id, client_name)
+
+                thread_id = client_topics.get(user_id)
+                if thread_id:
+                    await application.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        message_thread_id=thread_id,
+                        text=f"🤖 AI (вернулся после паузы): {answer}"
+                    )
+
+                state["paused"] = False
+                state["pending_client_messages"] = []
+
+                if escalate:
+                    await activate_escalation(application.bot, user_id, topic_names.get(user_id, "Клиент"), "", combined_text)
+                elif call_manager:
+                    state["paused"] = True
+                    state["last_manager_message_time"] = time.time()
+                    await set_topic_status(application.bot, user_id, "paused")
+                else:
+                    await set_topic_status(application.bot, user_id, "normal")
+
+            except Exception as e:
+                logging.error(f"Ошибка при возобновлении AI после паузы: {e}")
+
+
+flask_app = Flask(__name__)
+
+telegram_app_ref = {"app": None}
+
+N8N_SECRET = os.environ.get("N8N_SECRET", "change_me_please")
+
+
+@flask_app.route("/")
+def index():
+    return "OK"
+
+
+@flask_app.route("/send-touch", methods=["POST"])
+def send_touch():
+    from flask import request, jsonify
+    data = request.get_json(force=True, silent=True) or {}
+
+    if data.get("secret") != N8N_SECRET:
+        return jsonify({"error": "unauthorized"}), 403
+
+    user_id = data.get("user_id")
+    idea = data.get("idea")
+    next_touch_number = data.get("next_touch_number")
+
+    if not user_id or not idea:
+        return jsonify({"error": "user_id and idea are required"}), 400
+
+    app = telegram_app_ref["app"]
+    if not app:
+        return jsonify({"error": "bot not ready yet"}), 503
+
+    async def _send():
+        try:
+            user_id_int = int(user_id)
+
+            from ai_logic import ai_client, AI_MODEL
+            touch_prompt = (
+                "Ты - AI продавец магазина Клюшки В.НАЛИЧИИ. "
+                "Мы продаём ТОЛЬКО новые клюшки и новую хоккейную экипировку, никаких б/у. "
+                "Не упоминай б/у товары никогда. "
+                "Напиши короткое дружелюбное напоминание клиенту в Telegram. "
+                "Максимум 2-3 коротких предложения, без воды. "
+                "Без markdown разметки, 1-2 простых эмодзи. "
+                "Пиши только текст сообщения без вступлений и пояснений. "
+                f"Идея касания: {idea}"
+            )
+
+            response = ai_client.chat.completions.create(
+                model=AI_MODEL,
+                max_tokens=100,
+                messages=[{"role": "user", "content": touch_prompt}]
+            )
+            text = response.choices[0].message.content.strip()
+
+            await app.bot.send_message(chat_id=user_id_int, text=text)
+            sync_to_bitrix(user_id_int, "AI (касание)", text)
+
+            thread_id = client_topics.get(user_id_int)
+            if thread_id:
+                await app.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    message_thread_id=thread_id,
+                    text=f"🤖 AI (касание #{next_touch_number}): {text}"
+                )
+
+            if next_touch_number is not None:
+                update_touch_number(user_id_int, next_touch_number)
+
+        except Exception as e:
+            logging.error(f"Ошибка в send_touch: {e}")
+
+    asyncio.run_coroutine_threadsafe(_send(), telegram_app_ref["loop"])
+    return jsonify({"status": "queued"}), 200
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+
+async def run_bot():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    telegram_app_ref["loop"] = asyncio.get_event_loop()
+    telegram_app_ref["app"] = app
+
+    asyncio.create_task(pause_checker_loop(app))
+
+    await asyncio.Event().wait()
+
+
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(run_bot())
+
+
+if __name__ == "__main__":
+    main()
