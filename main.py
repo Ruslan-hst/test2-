@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name, update_topic_link
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
 import bitrix
 
@@ -104,7 +104,8 @@ async def get_or_create_topic(context, user_id, user_name, username):
     if deal_id:
         client_deals[user_id] = deal_id
 
-    save_topic_mapping(user_id, thread_id, user_name, username, deal_id=deal_id or "")
+    topic_link_save = get_topic_link(thread_id)
+    save_topic_mapping(user_id, thread_id, user_name, username, deal_id=deal_id or "", topic_link=topic_link_save)
 
     try:
         topic_link_new = get_topic_link(thread_id)
