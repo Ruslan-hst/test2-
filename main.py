@@ -234,6 +234,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sync_to_bitrix(user_id, "Клиент", raw_text)
     update_last_client_message(user_id)
 
+    # Уведомление когда клиент присылает данные для отправки
+    data_keywords = ["фио", "ф.и.о", "улица", "город", "индекс", "область", "адрес доставки", "данные для"]
+    payment_keywords = ["оплатил", "оплатила", "перевел", "перевела", "отправил оплату", "скинул", "оплата отправлена", "деньги перевел", "перевод сделал"]
+    text_lower_notify = raw_text.lower()
+    if any(w in text_lower_notify for w in data_keywords):
+        try:
+            thread_id_notify = client_topics.get(user_id)
+            topic_link_notify = get_topic_link(thread_id_notify) if thread_id_notify else ""
+            await context.bot.send_message(
+                chat_id=ADMIN_PERSONAL_ID,
+                text=f"📦 Клиент прислал данные для отправки\n\n👤 {user_name} (@{username})\n👉 {topic_link_notify}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка уведомления о данных: {e}")
+    elif any(w in text_lower_notify for w in payment_keywords):
+        try:
+            thread_id_notify = client_topics.get(user_id)
+            topic_link_notify = get_topic_link(thread_id_notify) if thread_id_notify else ""
+            await context.bot.send_message(
+                chat_id=ADMIN_PERSONAL_ID,
+                text=f"💰 КЛИЕНТ ОПЛАТИЛ - ПРОВЕРИТЬ ОПЛАТУ\n\n👤 {user_name} (@{username})\n👉 {topic_link_notify}"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка уведомления об оплате: {e}")
+
     if is_escalated(user_id):
         return
 
@@ -298,6 +323,34 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user_id = topic_to_client[thread_id]
     reply_text = update.message.text
+
+    if reply_text and reply_text.strip().startswith("/отправка"):
+        parts = reply_text.strip().split()
+        if len(parts) >= 3:
+            trek = parts[1]
+            summa = parts[2]
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🚛 Ваш заказ отправлен и скоро будет у вас!\n\nТрек-номер: {trek}\nОтследить: https://www.cdek.ru/ru/tracking/\n\nОплата за доставку при получении: {summa} руб.\n❗ Для получения возьмите паспорт.\n\nС уважением, команда Клюшки В.НАЛИЧИИ ❤️"
+                )
+                await update.message.reply_text("✅ Сообщение об отправке отправлено клиенту")
+            except Exception as e:
+                logging.error(f"Ошибка отправки трека: {e}")
+        else:
+            await update.message.reply_text("❌ Формат: /отправка ТРЕК СУММА")
+        return
+
+    if reply_text and reply_text.strip() == "/оплата":
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Оплата получена, спасибо!\nГотовим ваш заказ к отправке. Трек-номер пришлём как только отправим 🏒"
+            )
+            await update.message.reply_text("✅ Подтверждение оплаты отправлено клиенту")
+        except Exception as e:
+            logging.error(f"Ошибка подтверждения оплаты: {e}")
+        return
 
     if reply_text and reply_text.strip() == "/включить":
         escalated[user_id] = False
