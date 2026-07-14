@@ -77,7 +77,7 @@ def load_topic_mapping():
         return {}, {}, {}, {}
 
 
-def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_id=""):
+def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_id="", topic_link=""):
     """Сохраняет новую связь user_id <-> thread_id <-> deal_id в Google Sheets.
     Также сразу заполняет last_client_message_time и touch_number=0, status=active для нового клиента."""
     try:
@@ -85,10 +85,12 @@ def save_topic_mapping(user_id, thread_id, user_name, username, phone="", deal_i
         now_iso = datetime.now(timezone.utc).isoformat()
         sheet.append_row([
             str(user_id), str(thread_id), user_name, username, phone, str(deal_id),
-            now_iso,  # G - last_client_message_time
-            "",       # H - last_manager_message_time
-            "0",      # I - touch_number
-            "active"  # J - status
+            now_iso,     # G - last_client_message_time
+            "",          # H - last_manager_message_time
+            "0",         # I - touch_number
+            "active",    # J - status
+            "",          # K - client_name
+            topic_link   # L - topic_link
         ])
     except Exception as e:
         logging.error(f"Ошибка сохранения маппинга в Sheets: {e}")
@@ -162,3 +164,14 @@ def update_client_name(user_id, name):
             sheet.update_cell(idx, 11, name)  # K = client_name
     except Exception as e:
         logging.error(f"Ошибка сохранения имени клиента: {e}")
+
+
+def update_topic_link(user_id, topic_link):
+    """Сохраняет ссылку на тему в колонку L (topic_link)."""
+    try:
+        sheet = get_chats_sheet()
+        idx = _find_row_index(sheet, user_id)
+        if idx:
+            sheet.update_cell(idx, 12, topic_link)  # L = topic_link
+    except Exception as e:
+        logging.error(f"Ошибка сохранения ссылки на тему: {e}")
