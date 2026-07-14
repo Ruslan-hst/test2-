@@ -107,9 +107,10 @@ async def get_or_create_topic(context, user_id, user_name, username):
     save_topic_mapping(user_id, thread_id, user_name, username, deal_id=deal_id or "")
 
     try:
+        topic_link_new = get_topic_link(thread_id)
         await context.bot.send_message(
             chat_id=ADMIN_PERSONAL_ID,
-            text=f"🆕 Новый клиент в боте!\n\n👤 Имя: {user_name}\n📱 Username: @{username}\n\n💬 Тема создана в группе"
+            text=f"🆕 Новый клиент в боте!\n\n👤 Имя: {user_name}\n📱 Username: @{username}\n\n💬 Перейти в чат: {topic_link_new}"
         )
     except Exception as e:
         logging.error(f"Ошибка уведомления о новом чате: {e}")
