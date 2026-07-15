@@ -179,53 +179,51 @@ def update_topic_link(user_id, topic_link):
 
 def get_photos_sheet():
     """Возвращает лист Фото."""
-    client = get_sheets_client()
-    return client.open_by_key(SHEET_ID).worksheet("Фото")
+    spreadsheet = get_spreadsheet()
+    return spreadsheet.worksheet("Фото")
 
 
 def save_media_file_id(caption: str, file_id: str, media_type: str = "photo"):
     """Сохраняет file_id фото или видео в лист Фото.
-    caption - подпись файла (например Bauer_Flylite_синий_1)
-    media_type - photo или video
+    caption - подпись файла (например Bauer_Pulse_бирюзовый_1)
+    Логика: ищем строку где Подпись = caption, пишем в первую пустую колонку.
+    Если строки нет — создаём новую.
     """
     try:
         sheet = get_photos_sheet()
         all_rows = sheet.get_all_values()
 
-        # Ищем строку с такой подписью
+        # Ищем строку с точно такой подписью
         row_idx = None
-        for i, row in enumerate(all_rows[1:], 2):  # пропускаем заголовок
+        for i, row in enumerate(all_rows[1:], 2):
             if row and row[0] == caption:
                 row_idx = i
+                row_data = row
                 break
 
         if row_idx is None:
-            # Новая строка
+            # Новая строка — создаём с нужными колонками
             if media_type == "photo":
                 sheet.append_row([caption, file_id, "", "", "", ""])
             else:
                 sheet.append_row([caption, "", "", "", file_id, ""])
-            logging.info(f"Добавлена новая запись: {caption}")
+            logging.info(f"Создана новая запись: {caption}")
         else:
-            # Обновляем существующую строку — ищем первую пустую ячейку
-            row = all_rows[row_idx - 1]
             # Дополняем строку до 6 элементов
-            while len(row) < 6:
-                row.append("")
+            while len(row_data) < 6:
+                row_data.append("")
 
             if media_type == "photo":
-                # Колонки B, C, D (индексы 1, 2, 3) — фото
                 for col_idx in [1, 2, 3]:
-                    if not row[col_idx]:
+                    if not row_data[col_idx]:
                         sheet.update_cell(row_idx, col_idx + 1, file_id)
-                        logging.info(f"Сохранено фото: {caption} в колонку {col_idx + 1}")
+                        logging.info(f"Сохранено фото {col_idx}: {caption}")
                         break
             else:
-                # Колонки E, F (индексы 4, 5) — видео
                 for col_idx in [4, 5]:
-                    if not row[col_idx]:
+                    if not row_data[col_idx]:
                         sheet.update_cell(row_idx, col_idx + 1, file_id)
-                        logging.info(f"Сохранено видео: {caption} в колонку {col_idx + 1}")
+                        logging.info(f"Сохранено видео {col_idx}: {caption}")
                         break
 
     except Exception as e:
@@ -234,22 +232,25 @@ def save_media_file_id(caption: str, file_id: str, media_type: str = "photo"):
 
 def get_media_by_model(model: str, color: str = None) -> dict:
     """Возвращает dict с file_id фото и видео для модели и цвета.
+    Подписи в таблице: Bauer_Pulse_бирюзовый_1, Bauer_Pulse_бирюзовый_2 и т.д.
     Возвращает: {"photos": [...], "videos": [...]}
     """
     try:
         sheet = get_photos_sheet()
         all_rows = sheet.get_all_values()
 
-        model_key = model.replace(" ", "_")
+        # Строим префикс для поиска
+        model_key = model.strip().replace(" ", "_")
         if color:
-            prefix = model_key + "_" + color
+            color_key = color.strip().replace(" ", "_")
+            prefix = model_key + "_" + color_key
         else:
             prefix = model_key
 
         photos = []
         videos = []
 
-        for row in all_rows[1:]:  # пропускаем заголовок
+        for row in all_rows[1:]:
             if not row or not row[0]:
                 continue
             caption = row[0]
