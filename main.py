@@ -444,7 +444,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_id = photo.file_id
         if caption:
             save_media_file_id(caption, file_id, "photo")
-            await update.message.reply_text("Фото сохранено: " + caption)
+            await update.message.reply_text("Фото сохранено: " + caption + "\nfile_id: " + file_id)
         else:
             await update.message.reply_text("Фото без подписи - не сохранено. Добавь подпись к фото.")
         return
