@@ -292,31 +292,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_client_name(user_id, client_name)
 
         map_keywords = ["адрес", "карт", "2гис", "яндекс", "как найти", "где находится", "самовывоз", "приехать"]
+        uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
+
         # Проверяем маркер [PHOTO:модель|цвет] для отправки фото
         if "[PHOTO:" in answer:
             try:
-                start = answer.index("[PHOTO:") + 7
-                end = answer.index("]", start)
-                photo_key = answer[start:end].strip()
-                answer = answer.replace(f"[PHOTO:{photo_key}]", "").strip()
+                p_start = answer.index("[PHOTO:") + 7
+                p_end = answer.index("]", p_start)
+                photo_key = answer[p_start:p_end].strip()
+                answer = answer.replace("[PHOTO:" + photo_key + "]", "").strip()
                 if "|" in photo_key:
                     model_p, color_p = photo_key.split("|", 1)
+                    color_p = color_p.strip()
                 else:
                     model_p, color_p = photo_key, None
-                media = get_media_by_model(model_p.strip(), color_p.strip() if color_p else None)
+                media = get_media_by_model(model_p.strip(), color_p)
                 await update.message.reply_text(answer)
-                for fid in media["photos"]:
-                    await context.bot.send_photo(chat_id=user_id, photo=fid)
-                for fid in media["videos"]:
-                    await context.bot.send_video(chat_id=user_id, video=fid)
+                if media["photos"] or media["videos"]:
+                    for fid in media["photos"]:
+                        await context.bot.send_photo(chat_id=user_id, photo=fid)
+                    for fid in media["videos"]:
+                        await context.bot.send_video(chat_id=user_id, video=fid)
+                else:
+                    await update.message.reply_text("К сожалению, фото для этой модели пока нет 📷")
             except Exception as e:
-                logging.error(f"Ошибка отправки фото: {e}")
-        else:
-            pass  # продолжаем обычную обработку ниже
-
-        uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
-
-        if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
+                logging.error("Ошибка отправки фото: " + str(e))
+                await update.message.reply_text(answer)
+        elif any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
             await update.message.reply_text(answer, reply_markup=MAP_BUTTONS)
         elif any(w in answer.lower() for w in uds_keywords):
             await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
@@ -331,10 +333,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id=ADMIN_GROUP_ID,
                     message_thread_id=thread_id,
-                    text=f"🤖 AI: {answer}"
+                    text="🤖 AI: " + answer
                 )
         except Exception as e:
-            logging.error(f"Ошибка дублирования ответа AI в группу: {e}")
+            logging.error("Ошибка дублирования ответа AI в группу: " + str(e))
 
     except Exception as e:
         logging.error(f"AI ошибка: {e}")
