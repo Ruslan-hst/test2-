@@ -175,3 +175,99 @@ def update_topic_link(user_id, topic_link):
             sheet.update_cell(idx, 12, topic_link)  # L = topic_link
     except Exception as e:
         logging.error(f"Ошибка сохранения ссылки на тему: {e}")
+
+
+def get_photos_sheet():
+    """Возвращает лист Фото."""
+    spreadsheet = get_spreadsheet()
+    return spreadsheet.worksheet("Фото")
+
+
+def save_media_file_id(caption: str, file_id: str, media_type: str = "photo"):
+    """Сохраняет file_id фото или видео в лист Фото.
+    caption - подпись файла (например Bauer_Flylite_синий_1)
+    media_type - photo или video
+    """
+    try:
+        sheet = get_photos_sheet()
+        all_rows = sheet.get_all_values()
+
+        # Ищем строку с такой подписью
+        row_idx = None
+        for i, row in enumerate(all_rows[1:], 2):  # пропускаем заголовок
+            if row and row[0] == caption:
+                row_idx = i
+                break
+
+        if row_idx is None:
+            # Новая строка
+            if media_type == "photo":
+                sheet.append_row([caption, file_id, "", "", "", ""])
+            else:
+                sheet.append_row([caption, "", "", "", file_id, ""])
+            logging.info(f"Добавлена новая запись: {caption}")
+        else:
+            # Обновляем существующую строку — ищем первую пустую ячейку
+            row = all_rows[row_idx - 1]
+            # Дополняем строку до 6 элементов
+            while len(row) < 6:
+                row.append("")
+
+            if media_type == "photo":
+                # Колонки B, C, D (индексы 1, 2, 3) — фото
+                for col_idx in [1, 2, 3]:
+                    if not row[col_idx]:
+                        sheet.update_cell(row_idx, col_idx + 1, file_id)
+                        logging.info(f"Сохранено фото: {caption} в колонку {col_idx + 1}")
+                        break
+            else:
+                # Колонки E, F (индексы 4, 5) — видео
+                for col_idx in [4, 5]:
+                    if not row[col_idx]:
+                        sheet.update_cell(row_idx, col_idx + 1, file_id)
+                        logging.info(f"Сохранено видео: {caption} в колонку {col_idx + 1}")
+                        break
+
+    except Exception as e:
+        logging.error(f"Ошибка сохранения media file_id: {e}")
+
+
+def get_media_by_model(model: str, color: str = None) -> dict:
+    """Возвращает dict с file_id фото и видео для модели и цвета.
+    Возвращает: {"photos": [...], "videos": [...]}
+    """
+    try:
+        sheet = get_photos_sheet()
+        all_rows = sheet.get_all_values()
+
+        model_key = model.replace(" ", "_")
+        if color:
+            prefix = model_key + "_" + color
+        else:
+            prefix = model_key
+
+        photos = []
+        videos = []
+
+        for row in all_rows[1:]:  # пропускаем заголовок
+            if not row or not row[0]:
+                continue
+            caption = row[0]
+            if not caption.startswith(prefix):
+                continue
+
+            # Фото (колонки B, C, D — индексы 1, 2, 3)
+            for i in [1, 2, 3]:
+                if i < len(row) and row[i]:
+                    photos.append(row[i])
+
+            # Видео (колонки E, F — индексы 4, 5)
+            for i in [4, 5]:
+                if i < len(row) and row[i]:
+                    videos.append(row[i])
+
+        return {"photos": photos, "videos": videos}
+
+    except Exception as e:
+        logging.error(f"Ошибка получения media: {e}")
+        return {"photos": [], "videos": []}
