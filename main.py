@@ -435,6 +435,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id == ADMIN_GROUP_ID:
         return
 
+    # Если Руслан пересылает фото боту в личку - сохраняем file_id в Sheets
+    if update.message.from_user.id == ADMIN_PERSONAL_ID:
+        photo = update.message.photo[-1]
+        caption = update.message.caption or ""
+        file_id = photo.file_id
+        if caption:
+            save_media_file_id(caption, file_id, "photo")
+            await update.message.reply_text("Фото сохранено: " + caption)
+        else:
+            await update.message.reply_text("Фото без подписи - не сохранено. Добавь подпись к фото.")
+        return
+
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
