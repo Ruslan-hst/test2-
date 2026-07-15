@@ -179,8 +179,8 @@ def update_topic_link(user_id, topic_link):
 
 def get_photos_sheet():
     """Возвращает лист Фото."""
-    spreadsheet = get_spreadsheet()
-    return spreadsheet.worksheet("Фото")
+    client = get_sheets_client()
+    return client.open_by_key(SHEET_ID).worksheet("Фото")
 
 
 def save_media_file_id(caption: str, file_id: str, media_type: str = "photo"):
