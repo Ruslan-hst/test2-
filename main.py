@@ -413,6 +413,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id == ADMIN_GROUP_ID:
         return
 
+    # Если Руслан пересылает фото боту в личку - показываем file_id
+    if update.message.from_user.id == ADMIN_PERSONAL_ID:
+        photo = update.message.photo[-1]
+        caption = update.message.caption or ""
+        file_id = photo.file_id
+        text = "file_id получен!\n\nПодпись: " + caption + "\nfile_id: " + file_id
+        await update.message.reply_text(text)
+        return
+
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "без username"
     user_name = update.message.from_user.full_name or "Клиент"
