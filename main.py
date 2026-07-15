@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name, update_topic_link
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name, update_topic_link, save_media_file_id, get_media_by_model, get_media_by_model
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
 import bitrix
 
@@ -292,6 +292,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_client_name(user_id, client_name)
 
         map_keywords = ["адрес", "карт", "2гис", "яндекс", "как найти", "где находится", "самовывоз", "приехать"]
+        # Проверяем маркер [PHOTO:модель|цвет] для отправки фото
+        if "[PHOTO:" in answer:
+            try:
+                start = answer.index("[PHOTO:") + 7
+                end = answer.index("]", start)
+                photo_key = answer[start:end].strip()
+                answer = answer.replace(f"[PHOTO:{photo_key}]", "").strip()
+                if "|" in photo_key:
+                    model_p, color_p = photo_key.split("|", 1)
+                else:
+                    model_p, color_p = photo_key, None
+                media = get_media_by_model(model_p.strip(), color_p.strip() if color_p else None)
+                await update.message.reply_text(answer)
+                for fid in media["photos"]:
+                    await context.bot.send_photo(chat_id=user_id, photo=fid)
+                for fid in media["videos"]:
+                    await context.bot.send_video(chat_id=user_id, video=fid)
+            except Exception as e:
+                logging.error(f"Ошибка отправки фото: {e}")
+        else:
+            pass  # продолжаем обычную обработку ниже
+
         uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
 
         if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
@@ -411,15 +433,6 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id == ADMIN_GROUP_ID:
-        return
-
-    # Если Руслан пересылает фото боту в личку - показываем file_id
-    if update.message.from_user.id == ADMIN_PERSONAL_ID:
-        photo = update.message.photo[-1]
-        caption = update.message.caption or ""
-        file_id = photo.file_id
-        text = "file_id получен!\n\nПодпись: " + caption + "\nfile_id: " + file_id
-        await update.message.reply_text(text)
         return
 
     user_id = update.message.from_user.id
@@ -646,6 +659,22 @@ def send_touch():
     return jsonify({"status": "queued"}), 200
 
 
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик видео - только от Руслана в личку для сохранения file_id."""
+    if update.message.chat_id == ADMIN_GROUP_ID:
+        return
+    if update.message.from_user.id == ADMIN_PERSONAL_ID:
+        video = update.message.video
+        caption = update.message.caption or ""
+        file_id = video.file_id
+        if caption:
+            save_media_file_id(caption, file_id, "video")
+            await update.message.reply_text("Видео сохранено: " + caption)
+        else:
+            await update.message.reply_text("Видео без подписи - не сохранено. Добавь подпись к видео.")
+        return
+
+
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
@@ -655,6 +684,7 @@ async def run_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await app.initialize()
     await app.start()
