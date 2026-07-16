@@ -318,16 +318,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Ошибка отправки фото: {e}")
         else:
-            pass  # продолжаем обычную обработку ниже
+            uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
 
-        uds_keywords = ["uds", "удс", "скидка", "бонус", "кэшбэк", "8900", "8 900"]
-
-        if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
-            await update.message.reply_text(answer, reply_markup=MAP_BUTTONS)
-        elif any(w in answer.lower() for w in uds_keywords):
-            await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
-        else:
-            await update.message.reply_text(answer)
+            if any(w in answer.lower() for w in map_keywords) or any(w in raw_text.lower() for w in map_keywords):
+                await update.message.reply_text(answer, reply_markup=MAP_BUTTONS)
+            elif any(w in answer.lower() for w in uds_keywords):
+                await update.message.reply_text(answer, reply_markup=UDS_BUTTONS)
+            else:
+                await update.message.reply_text(answer)
 
         sync_to_bitrix(user_id, "AI", answer)
 
