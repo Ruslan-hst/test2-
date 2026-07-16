@@ -17,6 +17,8 @@ ai_client = OpenAI(
 
 CALL_MANAGER_MARKER = "[CALL_MANAGER]"
 ESCALATE_MARKER = "[ESCALATE]"
+NALOG_MARKER = "[NALOG]"
+ORDER_PREFIX = "[ORDER:"
 CLASSIFY_PREFIX = "[CLASSIFY:"
 VALID_SEGMENTS = ["SR", "INT", "JR", "ДЕШЕВЫЕ", "ОРИГИНАЛЫ", "ВРАТАРСКИЕ"]
 
@@ -267,7 +269,22 @@ def ask_ai_sync(user_id, content):
 
     dialogs[user_id].append({"role": "assistant", "content": clean_answer})
 
-    return clean_answer, call_manager, escalate, classification, client_name
+    # Обрабатываем маркер [NALOG]
+    nalog = NALOG_MARKER in raw_answer
+    clean_answer = clean_answer.replace(NALOG_MARKER, "").strip()
+
+    # Обрабатываем маркер [ORDER:данные]
+    order_data = None
+    if ORDER_PREFIX in raw_answer:
+        try:
+            o_start = clean_answer.index(ORDER_PREFIX) + len(ORDER_PREFIX)
+            o_end = clean_answer.index("]", o_start)
+            order_data = clean_answer[o_start:o_end].strip()
+            clean_answer = clean_answer.replace(ORDER_PREFIX + order_data + "]", "").strip()
+        except (ValueError, IndexError):
+            pass
+
+    return clean_answer, call_manager, escalate, classification, client_name, nalog, order_data
 
 
 def ask_ai_with_image(image_content_block, caption_text):
