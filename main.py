@@ -304,12 +304,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     model_p, color_p = photo_key.split("|", 1)
                 else:
                     model_p, color_p = photo_key, None
-                media = get_media_by_model(model_p.strip(), color_p.strip() if color_p else None)
+                color_clean = color_p.strip() if color_p else None
+                photos_list = get_photos(model_p.strip(), color_clean)
+                videos_list = get_videos(model_p.strip(), color_clean)
                 await update.message.reply_text(answer)
-                for fid in media["photos"]:
-                    await context.bot.send_photo(chat_id=user_id, photo=fid)
-                for fid in media["videos"]:
-                    await context.bot.send_video(chat_id=user_id, video=fid)
+                if photos_list or videos_list:
+                    for fid in photos_list:
+                        await context.bot.send_photo(chat_id=user_id, photo=fid)
+                    for fid in videos_list:
+                        await context.bot.send_video(chat_id=user_id, video=fid)
+                else:
+                    await update.message.reply_text("Фото для этой модели пока нет 📷")
             except Exception as e:
                 logging.error(f"Ошибка отправки фото: {e}")
         else:
