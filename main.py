@@ -13,8 +13,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name, update_topic_link, save_media_file_id
-from photos import get_photos, get_videos, get_media_by_model
+from sheets import load_topic_mapping, save_topic_mapping, update_deal_id, update_last_client_message, update_last_manager_message, update_touch_number, update_client_name, update_topic_link
+from photos import get_photos, get_videos
 from ai_logic import ask_ai_sync, ask_ai_with_image, dialogs
 import bitrix
 
@@ -436,16 +436,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat_id == ADMIN_GROUP_ID:
         return
 
-    # Если Руслан пересылает фото боту в личку - сохраняем file_id в Sheets
+    # Если Руслан пересылает фото боту в личку - показываем file_id
     if update.message.from_user.id == ADMIN_PERSONAL_ID:
         photo = update.message.photo[-1]
-        caption = update.message.caption or ""
+        caption = update.message.caption or "нет подписи"
         file_id = photo.file_id
-        if caption:
-            save_media_file_id(caption, file_id, "photo")
-            await update.message.reply_text("Фото сохранено: " + caption)
-        else:
-            await update.message.reply_text("Фото без подписи - не сохранено. Добавь подпись к фото.")
+        await update.message.reply_text("Подпись: " + caption + "\nfile_id: " + file_id)
         return
 
     user_id = update.message.from_user.id
@@ -678,13 +674,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.message.from_user.id == ADMIN_PERSONAL_ID:
         video = update.message.video
-        caption = update.message.caption or ""
+        caption = update.message.caption or "нет подписи"
         file_id = video.file_id
-        if caption:
-            save_media_file_id(caption, file_id, "video")
-            await update.message.reply_text("Видео сохранено: " + caption)
-        else:
-            await update.message.reply_text("Видео без подписи - не сохранено. Добавь подпись к видео.")
+        await update.message.reply_text("Подпись: " + caption + "\nfile_id: " + file_id)
         return
 
 
