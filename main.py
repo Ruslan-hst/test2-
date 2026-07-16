@@ -238,10 +238,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_last_client_message(user_id)
 
     # Уведомление когда клиент присылает данные для отправки
-    data_keywords = ["фио", "ф.и.о", "улица", "город", "индекс", "область", "адрес доставки", "данные для"]
+    data_keywords = ["фио", "ф.и.о", "улица", "город", "индекс", "область", "адрес доставки", "данные для", "пенза", "москва", "санкт", "казань", "екатеринбург", "новосибирск"]
+    # Также проверяем паттерн телефона
+    import re as _re
+    has_phone = bool(_re.search(r"[+7|8][\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}", raw_text))
     payment_keywords = ["оплатил", "оплатила", "перевел", "перевела", "отправил оплату", "скинул", "оплата отправлена", "деньги перевел", "перевод сделал"]
     text_lower_notify = raw_text.lower()
-    if any(w in text_lower_notify for w in data_keywords):
+    if any(w in text_lower_notify for w in data_keywords) or has_phone:
         try:
             thread_id_notify = client_topics.get(user_id)
             topic_link_notify = get_topic_link(thread_id_notify) if thread_id_notify else ""
@@ -271,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await update.message.chat.send_action("typing")
-        answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, text)
+        answer, call_manager, escalate, classification, client_name, nalog, order_data = ask_ai_sync(user_id, text)
 
         if escalate:
             await update.message.reply_text(answer)
@@ -396,7 +399,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
-                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate, classification, client_name, nalog, order_data = ask_ai_sync(user_id, content)
                 await context.bot.send_message(chat_id=user_id, text=answer)
                 sync_to_bitrix(user_id, "AI", answer)
                 thread_id = client_topics.get(user_id)
@@ -559,7 +562,7 @@ async def pause_checker_loop(application):
                 combined_text = "\n".join(pending)
                 content = f"[Сообщения клиента пока ты не отвечал]\n{combined_text}"
 
-                answer, call_manager, escalate, classification, client_name = ask_ai_sync(user_id, content)
+                answer, call_manager, escalate, classification, client_name, nalog, order_data = ask_ai_sync(user_id, content)
 
                 await application.bot.send_message(chat_id=user_id, text=answer)
                 sync_to_bitrix(user_id, "AI", answer)
