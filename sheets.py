@@ -37,13 +37,25 @@ def get_stock():
     try:
         client = get_sheets_client()
         sheet = client.open_by_key(SHEET_ID).worksheet("Склад")
-        data = sheet.get_all_records()
+        all_values = sheet.get_all_values()
+        if not all_values:
+            return _stock_cache["data"] or []
+        headers = all_values[0]
+        data = []
+        for row in all_values[1:]:
+            if not any(cell for cell in row):
+                continue
+            row_dict = {}
+            for i, header in enumerate(headers):
+                row_dict[header] = row[i] if i < len(row) else ""
+            data.append(row_dict)
         _stock_cache["data"] = data
         _stock_cache["timestamp"] = now
         return data
     except Exception as e:
         logging.error(f"Ошибка получения склада: {e}")
         if _stock_cache["data"] is not None:
+            logging.info("Используем кэш склада")
             return _stock_cache["data"]
         return []
 
