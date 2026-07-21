@@ -355,6 +355,29 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = topic_to_client[thread_id]
     reply_text = update.message.text
 
+    # Замечание 19 - пересылка фото от Руслана клиенту
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        caption = update.message.caption or ""
+        try:
+            await context.bot.send_photo(chat_id=user_id, photo=photo.file_id, caption=caption if caption else None)
+            await update.message.reply_text("✅ Фото отправлено клиенту")
+        except Exception as e:
+            logging.error(f"Ошибка пересылки фото клиенту: {e}")
+            await update.message.reply_text("❌ Не удалось отправить фото клиенту")
+        return
+
+    if update.message.video:
+        video = update.message.video
+        caption = update.message.caption or ""
+        try:
+            await context.bot.send_video(chat_id=user_id, video=video.file_id, caption=caption if caption else None)
+            await update.message.reply_text("✅ Видео отправлено клиенту")
+        except Exception as e:
+            logging.error(f"Ошибка пересылки видео клиенту: {e}")
+            await update.message.reply_text("❌ Не удалось отправить видео клиенту")
+        return
+
     if reply_text and reply_text.strip().startswith("/отправка"):
         parts = reply_text.strip().split()
         if len(parts) >= 3:
